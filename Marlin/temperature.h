@@ -375,21 +375,17 @@ class Temperature {
 
     #if ENABLED(FSR_SENSOR)
       static int16_t current_fsr;
-	    static float fsr_previous;
-	    static float fsr_bias;
-	    static float fsr_bias_probe;
-	    static float fsr_threshold_ratio;
+            static float fsr_previous;
+            static float fsr_bias;
+            static float fsr_bias_probe;
+            static float fsr_threshold_ratio;
       static bool fsr_activation;
 
       FORCE_INLINE static bool fsrTriggered() {
         bool fsr_triggered = (fsr_bias_probe < fsr_threshold_ratio);
         return fsr_triggered;
       }
-      FORCE_INLINE static void resetThreshold() {
-		    fsr_previous = current_fsr;
-        fsr_bias = 0.0;
-        fsr_bias_probe = 0.0;
-      }
+      static void resetThreshold();
     #endif
 
     //high level conversion routines, for use outside of temperature.cpp

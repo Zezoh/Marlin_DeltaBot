@@ -15349,61 +15349,59 @@ void manage_one_led() {
 #if ENABLED(ONE_BUTTON)
 
 int buttonState = 0; // 0 = not pressed   --- 1 = long pressed --- 2 short pressed
-int duration_in_millis = 1000;
+millis_t duration_in_millis = 1000;
 
-bool buttonActive = false; // indicates if the button is active/pressed
-bool longPressActive = false; // indicate if the button has been long-pressed
+bool buttonActive = false;     // indicates if the button is active/pressed
+bool longPressActive = false;  // indicate if the button has been long-pressed
 bool longPress = false;
 bool shortPress = false;
 bool doubleClick = false;
 
-long buttonTimer = 0;
-long pressDuration = 0; // stores the duration (in milliseconds) that the button was pressed/held down for
-long debounceThreshold = 50; // the threshold (in milliseconds) for a button press to be confirmed (i.e. not "noise")
-long lastPressTime = 0; // stores the time of the last button press
-long doubleClickThreshold = 500; // the threshold (in milliseconds) for detecting a double click
+millis_t buttonTimer = 0;
+millis_t pressDuration = 0;          // stores the duration (in milliseconds) that the button was pressed/held down for
+millis_t debounceThreshold = 50;      // the threshold (in milliseconds) for a button press to be confirmed (i.e. not "noise")
+millis_t lastPressTime = 0;           // stores the time of the last button press
+millis_t doubleClickThreshold = 500;  // the threshold (in milliseconds) for detecting a double click
 
 void manage_one_button_status() {
+  if (printer_states.activity_state == ACTIVITY_STARTUP_CALIBRATION) return;
 
-  if (printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
+  const bool pressed = ONE_BUTTON_PRESSED;
+  const millis_t now = millis();
+
+  // Detect a new press and capture start time
+  if (pressed && !buttonActive) {
+    buttonActive = true;
+    buttonTimer = now;
+    pressDuration = 0;
     buttonState = 0;
-    if (ONE_BUTTON_PRESSED) {
+  }
 
-      if (buttonActive == false) {
-        buttonActive = true;
-      }
-      buttonTimer = millis();
-      buttonState = 1;
-      while ((millis() - buttonTimer) <= duration_in_millis) {
-        if (ONE_BUTTON_RELEASED) {
-          buttonState = 2;
-          break;
-        }
-      }
-    }
-    
-    pressDuration = millis() - buttonTimer;
+  if (pressed && buttonActive) {
+    pressDuration = now - buttonTimer;
 
-    if (!buttonState) {
-      // TODO nothing is pressed
-    } else if (buttonState == 1 && longPressActive == false) {
+    // Long press detected once per hold
+    if (!longPressActive && pressDuration >= duration_in_millis) {
       longPressActive = true;
       longPress = true;
-    } else if (buttonState == 2) {
-      if (buttonActive == true) {
-        // reset the long press active state
-        if (longPressActive == true) {
-          longPressActive = false;
-        } else if (pressDuration > debounceThreshold) {
-          if (millis() - lastPressTime <= doubleClickThreshold) {
-            doubleClick = true;
-          } else {
-            shortPress = true;
-          }
-          lastPressTime = millis();
-        }
-      }
-      buttonActive = false;
+      buttonState = 1;
+    }
+  }
+
+  // Handle release events
+  if (!pressed && buttonActive) {
+    pressDuration = now - buttonTimer;
+    buttonActive = false;
+
+    if (longPressActive) {
+      longPressActive = false;
+    } else if (pressDuration > debounceThreshold) {
+      if (now - lastPressTime <= doubleClickThreshold)
+        doubleClick = true;
+      else
+        shortPress = true;
+      lastPressTime = now;
+      buttonState = 2;
     }
   }
 }
