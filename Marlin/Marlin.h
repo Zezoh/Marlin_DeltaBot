@@ -352,6 +352,10 @@ void home_all_axes();
 
 void report_current_position();
 
+#if ENABLED(DELTA) && ENABLED(DELTA_FAST_SQRT)
+  float Q_rsqrt(float number);
+#endif
+
 #if IS_KINEMATIC
   #if ENABLED(HANGPRINTER)
     extern float line_lengths[ABCD];
@@ -376,10 +380,6 @@ void report_current_position();
 
   void recalc_delta_settings();
   float delta_safe_distance_from_top();
-
-  #if ENABLED(DELTA_FAST_SQRT)
-    static float Q_rsqrt(float number);
-  #endif
 
   // Macro to obtain the Z position of an individual tower
   #define DELTA_Z(V,T) V[Z_AXIS] + SQRT(    \

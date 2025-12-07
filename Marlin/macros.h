@@ -229,7 +229,7 @@
 #define ATAN2(y, x) atan2f(y, x)
 #define POW(x, y)   powf(x, y)
 
-#if ENABLED(DELTA_FAST_SQRT)
+#if ENABLED(DELTA) && ENABLED(DELTA_FAST_SQRT)
  #define SQRT(x) (1.0f / Q_rsqrt(x))
 #else
  #define SQRT(x) sqrtf(x)
