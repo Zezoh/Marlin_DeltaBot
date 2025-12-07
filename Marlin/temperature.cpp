@@ -207,18 +207,58 @@ int16_t Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TE
 #endif
 
 #if ENABLED(FSR_SENSOR)
+  // New variables for improved FSR functionality
+  constexpr float FSR_ALPHA = 0.3f;          // Smoothing factor for exponential moving average
+  constexpr uint8_t FSR_SAMPLES = 5;          // Number of samples to average
+  int16_t fsr_sample_buffer[FSR_SAMPLES] = { 0 };
+  uint8_t fsr_sample_index = 0;
+  int32_t fsr_sample_sum = 0;
+
   bool Temperature::fsr_activation;
   int16_t Temperature::current_fsr = 0;
-  float Temperature::fsr_previous = 0; 
-  float Temperature::fsr_bias = 0; 
+  float Temperature::fsr_previous = 0;
+  float Temperature::fsr_bias = 0;
   float Temperature::fsr_bias_probe = 0;
   float Temperature::fsr_threshold_ratio = FSR_THRESHOLD_RATIO;
-  
-  // New variables for improved FSR functionality
-  const float FSR_ALPHA = 0.3; // Smoothing factor for exponential moving average
-  const int FSR_SAMPLES = 5; // Number of samples to average
-  int16_t fsr_sample_buffer[FSR_SAMPLES] = {0};
-  int fsr_sample_index = 0;
+
+  void Temperature::resetThreshold() {
+    fsr_previous = current_fsr;
+    fsr_bias = 0.0;
+    fsr_bias_probe = 0.0;
+
+    fsr_sample_sum = 0;
+    fsr_sample_index = 0;
+
+    LOOP_L_N(i, FSR_SAMPLES) {
+      fsr_sample_buffer[i] = current_fsr;
+      fsr_sample_sum += current_fsr;
+    }
+  }
+
+  static inline void update_fsr_filter(const int16_t new_value) {
+    // EMA to smooth abrupt readings
+    const float filtered_value = (FSR_ALPHA * new_value) + ((1 - FSR_ALPHA) * Temperature::current_fsr);
+    Temperature::current_fsr = static_cast<int16_t>(filtered_value);
+
+    // Maintain rolling sum for the moving average without repeated loops
+    fsr_sample_sum -= fsr_sample_buffer[fsr_sample_index];
+    fsr_sample_buffer[fsr_sample_index] = Temperature::current_fsr;
+    fsr_sample_sum += fsr_sample_buffer[fsr_sample_index];
+
+    fsr_sample_index = (fsr_sample_index + 1) % FSR_SAMPLES;
+
+    const float fsr_average = float(fsr_sample_sum) / FSR_SAMPLES;
+    Temperature::fsr_bias = fsr_average - Temperature::fsr_previous;
+    Temperature::fsr_previous = fsr_average;
+    Temperature::fsr_bias_probe += Temperature::fsr_bias;
+
+    if (DEBUGGING(INFO)) {
+      SERIAL_ECHOPAIR(" FSR Avg: ", fsr_average);
+      SERIAL_ECHOPAIR(" FSR Bias: ", Temperature::fsr_bias);
+      SERIAL_ECHOPAIR(" FSR Bias Probe: ", Temperature::fsr_bias_probe);
+      SERIAL_EOL();
+    }
+  }
 #endif
 
 #if HAS_AUTO_FAN || ENABLED(IS_MONO_FAN)
@@ -2276,35 +2316,13 @@ void Temperature::isr() {
         HAL_START_ADC(FSR_PIN);
         break;
       case Measure_FSR:
-        if (fsr_activation) {
-          int16_t new_fsr_value = HAL_READ_ADC();
-          
-          // Apply exponential moving average filter
-          current_fsr = (FSR_ALPHA * new_fsr_value) + ((1 - FSR_ALPHA) * current_fsr);
-          
-          // Store in circular buffer
-          fsr_sample_buffer[fsr_sample_index] = current_fsr;
-          fsr_sample_index = (fsr_sample_index + 1) % FSR_SAMPLES;
-          
-          // Calculate average of samples
-          int32_t fsr_sum = 0;
-          for (int i = 0; i < FSR_SAMPLES; i++) {
-            fsr_sum += fsr_sample_buffer[i];
-          }
-          int16_t fsr_average = fsr_sum / FSR_SAMPLES;
-          
-          // Calculate bias
-          fsr_bias = fsr_average - fsr_previous;
-          fsr_previous = fsr_average;
-          fsr_bias_probe += fsr_bias;
-          
-          if (DEBUGGING(INFO)) {
-            SERIAL_ECHOPAIR(" FSR Avg: ", fsr_average);
-            SERIAL_ECHOPAIR(" FSR Bias: ", fsr_bias);
-            SERIAL_ECHOPAIR(" FSR Bias Probe: ", fsr_bias_probe);
-            SERIAL_EOL();
-          }
+        if (!HAL_ADC_READY()) {
+          next_sensor_state = adc_sensor_state; // redo this state
+          break;
         }
+
+        if (fsr_activation)
+          update_fsr_filter(HAL_READ_ADC());
         break;
     #endif
 
