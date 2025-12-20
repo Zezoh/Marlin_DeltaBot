@@ -364,8 +364,10 @@ void Stepper::wake_up() {
  */
 void Stepper::set_directions() {
 
+  const uint8_t dir_bits = last_direction_bits;
+
   #define SET_STEP_DIR(A) \
-    if (motor_direction(_AXIS(A))) { \
+    if (TEST(dir_bits, _AXIS(A))) { \
       A##_APPLY_DIR(INVERT_## A##_DIR, false); \
       count_direction[_AXIS(A)] = -1; \
     } \
@@ -389,7 +391,7 @@ void Stepper::set_directions() {
 
   #if DISABLED(LIN_ADVANCE)
     #if ENABLED(MIXING_EXTRUDER)
-      if (motor_direction(E_AXIS)) {
+      if (TEST(dir_bits, E_AXIS)) {
         MIXING_STEPPERS_LOOP(j) REV_E_DIR(j);
         count_direction[E_AXIS] = -1;
       }
@@ -398,7 +400,7 @@ void Stepper::set_directions() {
         count_direction[E_AXIS] = 1;
       }
     #else
-      if (motor_direction(E_AXIS)) {
+      if (TEST(dir_bits, E_AXIS)) {
         REV_E_DIR(active_extruder);
         count_direction[E_AXIS] = -1;
       }
@@ -1313,6 +1315,20 @@ void Stepper::stepper_pulse_phase_isr() {
 
   const hal_timer_t added_step_ticks = hal_timer_t(ADDED_STEP_TICKS);
 
+  // Cache which axes actually need service so the compiler can elide unused branches
+  const uint8_t moving_axes = axis_did_move;
+
+  #if HAS_X_STEP
+    const bool x_moving = TEST(moving_axes, _AXIS(X));
+  #endif
+  #if HAS_Y_STEP
+    const bool y_moving = TEST(moving_axes, _AXIS(Y));
+  #endif
+  #if HAS_Z_STEP
+    const bool z_moving = TEST(moving_axes, _AXIS(Z));
+  #endif
+  const bool e_moving = TEST(moving_axes, E_AXIS);
+
   // Take multiple steps per interrupt (For high speed moves)
   do {
 
@@ -1320,17 +1336,19 @@ void Stepper::stepper_pulse_phase_isr() {
     #define _INVERT_STEP_PIN(AXIS) INVERT_## AXIS ##_STEP_PIN
 
     // Start an active pulse, if Bresenham says so, and update position
-    #define PULSE_START(AXIS) do{ \
-      delta_error[_AXIS(AXIS)] += advance_dividend[_AXIS(AXIS)]; \
-      if (delta_error[_AXIS(AXIS)] >= 0) { \
-        _APPLY_STEP(AXIS)(!_INVERT_STEP_PIN(AXIS), 0); \
-        if (COUNT_IT) count_position[_AXIS(AXIS)] += count_direction[_AXIS(AXIS)]; \
+    #define PULSE_START_IF(AXIS, ACTIVE) do{ \
+      if (ACTIVE) { \
+        delta_error[_AXIS(AXIS)] += advance_dividend[_AXIS(AXIS)]; \
+        if (delta_error[_AXIS(AXIS)] >= 0) { \
+          _APPLY_STEP(AXIS)(!_INVERT_STEP_PIN(AXIS), 0); \
+          if (COUNT_IT) count_position[_AXIS(AXIS)] += count_direction[_AXIS(AXIS)]; \
+        } \
       } \
     }while(0)
 
     // Stop an active pulse, if any, and adjust error term
-    #define PULSE_STOP(AXIS) do { \
-      if (delta_error[_AXIS(AXIS)] >= 0) { \
+    #define PULSE_STOP_IF(AXIS, ACTIVE) do { \
+      if (ACTIVE && delta_error[_AXIS(AXIS)] >= 0) { \
         delta_error[_AXIS(AXIS)] -= advance_divisor; \
         _APPLY_STEP(AXIS)(_INVERT_STEP_PIN(AXIS), 0); \
       } \
@@ -1339,60 +1357,64 @@ void Stepper::stepper_pulse_phase_isr() {
     // Pulse start
     #if ENABLED(HANGPRINTER)
       #if HAS_A_STEP
-        PULSE_START(A);
+        PULSE_START_IF(A, TEST(moving_axes, _AXIS(A)));
       #endif
       #if HAS_B_STEP
-        PULSE_START(B);
+        PULSE_START_IF(B, TEST(moving_axes, _AXIS(B)));
       #endif
       #if HAS_C_STEP
-        PULSE_START(C);
+        PULSE_START_IF(C, TEST(moving_axes, _AXIS(C)));
       #endif
       #if HAS_D_STEP
-        PULSE_START(D);
+        PULSE_START_IF(D, TEST(moving_axes, _AXIS(D)));
       #endif
     #else
       #if HAS_X_STEP
-        PULSE_START(X);
+        PULSE_START_IF(X, x_moving);
       #endif
       #if HAS_Y_STEP
-        PULSE_START(Y);
+        PULSE_START_IF(Y, y_moving);
       #endif
       #if HAS_Z_STEP
-        PULSE_START(Z);
+        PULSE_START_IF(Z, z_moving);
       #endif
     #endif // HANGPRINTER
 
     // Pulse E/Mixing extruders
     #if ENABLED(LIN_ADVANCE)
       // Tick the E axis, correct error term and update position
-      delta_error[E_AXIS] += advance_dividend[E_AXIS];
-      if (delta_error[E_AXIS] >= 0) {
-        if (COUNT_IT) count_position[E_AXIS] += count_direction[E_AXIS];
-        delta_error[E_AXIS] -= advance_divisor;
-
-        // Don't step E here - But remember the number of steps to perform
-        motor_direction(E_AXIS) ? --LA_steps : ++LA_steps;
-      }
-    #else // !LIN_ADVANCE - use linear interpolation for E also
-      #if ENABLED(MIXING_EXTRUDER)
-
-        // Tick the E axis
+      if (e_moving) {
         delta_error[E_AXIS] += advance_dividend[E_AXIS];
         if (delta_error[E_AXIS] >= 0) {
           if (COUNT_IT) count_position[E_AXIS] += count_direction[E_AXIS];
           delta_error[E_AXIS] -= advance_divisor;
-        }
 
-        // Tick the counters used for this mix in proper proportion
-        MIXING_STEPPERS_LOOP(j) {
-          // Step mixing steppers (proportionally)
-          delta_error_m[j] += advance_dividend_m[j];
-          // Step when the counter goes over zero
-          if (delta_error_m[j] >= 0) E_STEP_WRITE(j, !INVERT_E_STEP_PIN);
+          // Don't step E here - But remember the number of steps to perform
+          motor_direction(E_AXIS) ? --LA_steps : ++LA_steps;
+        }
+      }
+    #else // !LIN_ADVANCE - use linear interpolation for E also
+      #if ENABLED(MIXING_EXTRUDER)
+
+        if (e_moving) {
+          // Tick the E axis
+          delta_error[E_AXIS] += advance_dividend[E_AXIS];
+          if (delta_error[E_AXIS] >= 0) {
+            if (COUNT_IT) count_position[E_AXIS] += count_direction[E_AXIS];
+            delta_error[E_AXIS] -= advance_divisor;
+          }
+
+          // Tick the counters used for this mix in proper proportion
+          MIXING_STEPPERS_LOOP(j) {
+            // Step mixing steppers (proportionally)
+            delta_error_m[j] += advance_dividend_m[j];
+            // Step when the counter goes over zero
+            if (delta_error_m[j] >= 0) E_STEP_WRITE(j, !INVERT_E_STEP_PIN);
+          }
         }
 
       #else // !MIXING_EXTRUDER
-        PULSE_START(E);
+        PULSE_START_IF(E, e_moving);
       #endif
     #endif // !LIN_ADVANCE
 
@@ -1406,26 +1428,26 @@ void Stepper::stepper_pulse_phase_isr() {
 
     #if ENABLED(HANGPRINTER)
       #if HAS_A_STEP
-        PULSE_STOP(A);
+        PULSE_STOP_IF(A, TEST(moving_axes, _AXIS(A)));
       #endif
       #if HAS_B_STEP
-        PULSE_STOP(B);
+        PULSE_STOP_IF(B, TEST(moving_axes, _AXIS(B)));
       #endif
       #if HAS_C_STEP
-        PULSE_STOP(C);
+        PULSE_STOP_IF(C, TEST(moving_axes, _AXIS(C)));
       #endif
       #if HAS_D_STEP
-        PULSE_STOP(D);
+        PULSE_STOP_IF(D, TEST(moving_axes, _AXIS(D)));
       #endif
     #else
       #if HAS_X_STEP
-        PULSE_STOP(X);
+        PULSE_STOP_IF(X, x_moving);
       #endif
       #if HAS_Y_STEP
-        PULSE_STOP(Y);
+        PULSE_STOP_IF(Y, y_moving);
       #endif
       #if HAS_Z_STEP
-        PULSE_STOP(Z);
+        PULSE_STOP_IF(Z, z_moving);
       #endif
     #endif
 
@@ -1438,7 +1460,7 @@ void Stepper::stepper_pulse_phase_isr() {
           }
         }
       #else // !MIXING_EXTRUDER
-        PULSE_STOP(E);
+        PULSE_STOP_IF(E, e_moving);
       #endif
     #endif // !LIN_ADVANCE
 
@@ -1664,10 +1686,7 @@ uint32_t Stepper::stepper_block_phase_isr() {
       if (X_MOVE_TEST) SBI(axis_bits, A_AXIS);
       if (Y_MOVE_TEST) SBI(axis_bits, B_AXIS);
       if (Z_MOVE_TEST) SBI(axis_bits, C_AXIS);
-      //if (!!current_block->steps[E_AXIS]) SBI(axis_bits, E_AXIS);
-      //if (!!current_block->steps[A_AXIS]) SBI(axis_bits, X_HEAD);
-      //if (!!current_block->steps[B_AXIS]) SBI(axis_bits, Y_HEAD);
-      //if (!!current_block->steps[C_AXIS]) SBI(axis_bits, Z_HEAD);
+      if (current_block->steps[E_AXIS]) SBI(axis_bits, E_AXIS);
       axis_did_move = axis_bits;
 
       // No acceleration / deceleration time elapsed so far

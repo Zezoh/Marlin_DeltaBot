@@ -418,9 +418,9 @@
   //#define DEFAULT_Kd 440
 
   //E3D with 30MM fan
-   #define DEFAULT_Kp 23.48
-   #define DEFAULT_Ki 2.03
-   #define DEFAULT_Kd 67.80
+   #define DEFAULT_Kp 52.88
+   #define DEFAULT_Ki 10.41
+   #define DEFAULT_Kd 67.15
 
 #endif // PIDTEMP
 
@@ -542,7 +542,7 @@
   // Make delta curves from many straight lines (linear interpolation).
   // This is a trade-off between visible corners (not enough segments)
   // and processor overload (too many expensive sqrt calls).
-  #define DELTA_SEGMENTS_PER_SECOND 100
+  #define DELTA_SEGMENTS_PER_SECOND 80
   
 
   //Fast inverse sqrt from Quake III Arena                                                
@@ -578,18 +578,18 @@
   #endif
 
   // Print surface diameter/2 minus unreachable space (avoid collisions with vertical towers).
-  #define DELTA_PRINTABLE_RADIUS 105.0 //100.0 // mm
+  #define DELTA_PRINTABLE_RADIUS 85.0 //100.0 // mm
 
   // Center-to-center distance of the holes in the diagonal push rods.
-  #define DELTA_DIAGONAL_ROD 242.00 //239.50 // mm
+  #define DELTA_DIAGONAL_ROD 210.00 //239.50 // mm
 
   // height from z=0 to home position
-  #define DELTA_HEIGHT 285.00 // get this value from auto calibrate
+  #define DELTA_HEIGHT 220.00 // get this value from auto calibrate
 
   #define DELTA_ENDSTOP_ADJ { 0.0, 0.0, 0.0 } // get these from auto calibrate
 
   // Horizontal distance bridged by diagonal push rods when effector is centered.
-  #define DELTA_RADIUS 110.0 //mm  Get this value from auto calibrate
+  #define DELTA_RADIUS 90.0 //mm  Get this value from auto calibrate
 
   // Trim adjustments for individual towers
   // tower angle corrections for X and Y tower / rotate XYZ so Z tower angle = 0
@@ -720,7 +720,7 @@
 #define XYZ_FULL_STEPS_PER_ROTATION 200
 #define XYZ_MICROSTEPS 16
 #define XYZ_BELT_PITCH 2
-#define XYZ_PULLEY_TEETH 16
+#define XYZ_PULLEY_TEETH 20
 
 // delta speeds must be the same on xyz
 #define DEFAULT_XYZ_STEPS_PER_UNIT ((XYZ_FULL_STEPS_PER_ROTATION) * (XYZ_MICROSTEPS) / double(XYZ_BELT_PITCH) / double(XYZ_PULLEY_TEETH))
@@ -731,7 +731,7 @@
  * Override with M203
  *                                      X, Y, Z, E0 [, E1[, E2[, E3[, E4]]]]
  */
-#define DEFAULT_MAX_FEEDRATE          { 280, 280, 280, 280 }
+#define DEFAULT_MAX_FEEDRATE          { 200, 200, 200, 120 }
 
 /**
  * Default Max Acceleration (change/s) change = mm/s
@@ -739,7 +739,7 @@
  * Override with M201
  *                                      X, Y, Z, E0 [, E1[, E2[, E3[, E4]]]]
  */
-#define DEFAULT_MAX_ACCELERATION      { 6000, 6000, 6000, 8000 }
+#define DEFAULT_MAX_ACCELERATION      { 3000, 3000, 3000, 5000 }
 
 /**
  * Default Acceleration (change/s) change = mm/s
@@ -749,9 +749,9 @@
  *   M204 R    Retract Acceleration
  *   M204 T    Travel Acceleration
  */
-#define DEFAULT_ACCELERATION          4500 // X, Y, Z and E acceleration for printing moves
-#define DEFAULT_RETRACT_ACCELERATION  4500 // E acceleration for retracts
-#define DEFAULT_TRAVEL_ACCELERATION   4500 // X, Y, Z acceleration for travel (non printing) moves
+#define DEFAULT_ACCELERATION          2000 // X, Y, Z and E acceleration for printing moves
+#define DEFAULT_RETRACT_ACCELERATION  3000 // E acceleration for retracts
+#define DEFAULT_TRAVEL_ACCELERATION   2000 // X, Y, Z acceleration for travel (non printing) moves
 
 /**
  * Default Jerk (mm/s)
@@ -761,10 +761,10 @@
  * When changing speed and direction, if the difference is less than the
  * value set here, it may happen instantaneously.
  */
-#define DEFAULT_XJERK                 25.0
+#define DEFAULT_XJERK                 8.0
 #define DEFAULT_YJERK                 DEFAULT_XJERK
 #define DEFAULT_ZJERK                 DEFAULT_XJERK // Must be same as XY for delta
-#define DEFAULT_EJERK                 25.0
+#define DEFAULT_EJERK                 8.0
 
 /**
  * S-Curve Acceleration
@@ -976,7 +976,7 @@
  *     But: `M851 Z+1` with a CLEARANCE of 2  =>  2mm from bed to nozzle.
  */
 #define Z_CLEARANCE_DEPLOY_PROBE    0 // Z Clearance for Deploy/Stow
-#define Z_CLEARANCE_BETWEEN_PROBES  3 // Z Clearance between probe points
+#define Z_CLEARANCE_BETWEEN_PROBES  5 // Z Clearance between probe points
 #define Z_CLEARANCE_MULTI_PROBE     2 // Z Clearance between multiple probes
 #define Z_OFFSET_CLEARANCE          3 // Z Clearance for auto z offset
 //#define Z_AFTER_PROBING           3 // Z position after probing is done
@@ -1013,9 +1013,9 @@
 // @section machine
 
 // Invert the stepper direction. Change (or reverse the motor connector) if an axis goes the wrong way.
-#define INVERT_X_DIR false // DELTA does not invert
-#define INVERT_Y_DIR false
-#define INVERT_Z_DIR false
+#define INVERT_X_DIR true // DELTA does not invert
+#define INVERT_Y_DIR true
+#define INVERT_Z_DIR true
 
 // @section extruder
 

@@ -150,7 +150,8 @@ typedef struct {
 
 #define HAS_POSITION_FLOAT (ENABLED(LIN_ADVANCE) || HAS_FEEDRATE_SCALING)
 
-#define BLOCK_MOD(n) ((n)&(BLOCK_BUFFER_SIZE-1))
+static constexpr uint8_t block_mod(const uint8_t n) { return n & (BLOCK_BUFFER_SIZE - 1); }
+#define BLOCK_MOD(n) block_mod(n)
 
 class Planner {
   public:
