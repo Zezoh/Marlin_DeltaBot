@@ -53,6 +53,7 @@
 
 #define ONE_BUTTON
 #define ONE_BUTTON_INVERTING true
+#define ONE_BUTTON_ROTARY  // Use a dedicated KY-040 rotary on the default RAMPS 1.4 pins
 
 #define SDCARD_AUTOCHECK
 #define SDCARD_DETECT_PIN 31

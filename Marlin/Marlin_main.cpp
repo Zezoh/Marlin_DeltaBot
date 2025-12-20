@@ -275,9 +275,6 @@
 #include "parser.h"
 
 
-#include <SimpleRotary.h>
-SimpleRotary rotary(52,53,14);
-	
 #if ENABLED(AUTO_POWER_CONTROL)
   #include "power.h"
 #endif
@@ -15429,37 +15426,74 @@ void manage_one_button_status() {
   }
 }
 
-  float counter = 0;
-  bool live_z = false; 
-  
-static float manage_encoder_movement() {
-// void manage_encoder_movement() {
-  byte i;
-  // 0 = not turning, 1 = CW, 2 = CCW
-  i = rotary.rotate();
-  if (i == 1) {
-    counter -= 0.025;
-    //SERIAL_ECHOLNPAIR("step CW:", counter);
-  }
-  if (i == 2) {
-    counter += 0.025;
-    //SERIAL_ECHOLNPAIR("step CCW:", counter);
-  }
-  return counter;
-}
+  #if ENABLED(ONE_BUTTON_ROTARY)
 
-inline void adjust_zprobe_offset() {
-  byte c;
-  c = rotary.pushType(1000);
-  if (c == 1 && wait_for_click == true) { // once click to clear and reset values 
-    wait_for_click = false;
-    live_z = false;
+    float counter = 0;
+    bool live_z = false;
+
+    #ifndef ONE_BUTTON_ROTARY_PIN_A
+      #define ONE_BUTTON_ROTARY_PIN_A 52
+    #endif
+
+    #ifndef ONE_BUTTON_ROTARY_PIN_B
+      #define ONE_BUTTON_ROTARY_PIN_B 53
+    #endif
+
+  #endif
+
+  inline void manage_encoder_movement() {
+    #if ENABLED(ONE_BUTTON_ROTARY)
+      static bool initialized = false;
+      static uint8_t last_state = 0;
+
+      const uint8_t current_state = (READ(ONE_BUTTON_ROTARY_PIN_A) << 1) | READ(ONE_BUTTON_ROTARY_PIN_B);
+
+      if (!initialized) {
+        last_state = current_state;
+        initialized = true;
+        return;
+      }
+
+      if (current_state != last_state) {
+        switch ((last_state << 2) | current_state) {
+          case 0b0001:
+          case 0b0111:
+          case 0b1110:
+          case 0b1000:
+            counter += 0.025f;
+            break;
+          case 0b0010:
+          case 0b0100:
+          case 0b1101:
+          case 0b1011:
+            counter -= 0.025f;
+            break;
+        }
+
+        last_state = current_state;
+      }
+    #endif
   }
-  if (c == 3) { // double click t start activite the probe offset wizard 
-    live_z = true;
-    enqueue_and_echo_commands_P(PSTR("G33 P-1"));
+
+  inline void adjust_zprobe_offset() {
+    if (wait_for_click && shortPress) { // once click to clear and reset values
+      wait_for_click = false;
+      #if ENABLED(ONE_BUTTON_ROTARY)
+        live_z = false;
+      #endif
+      shortPress = false;
+    }
+
+    #if ENABLED(ONE_BUTTON_ROTARY)
+      if (doubleClick) { // double click to start activate the probe offset wizard
+        doubleClick = false;
+        live_z = true;
+        enqueue_and_echo_commands_P(PSTR("G33 P-1"));
+      }
+    #else
+      doubleClick = false;
+    #endif
   }
-}
 
 inline void cooldown() {
 	#if FAN_COUNT > 0
@@ -15473,13 +15507,14 @@ inline void line_to_z(const float & z) {
   planner.buffer_line_kinematic(current_position, planner.max_feedrate_mm_s[Z_AXIS]/2, active_extruder);
 }
 
-inline void manage_one_button_actions() {
-
-  if (live_z == true && wait_for_click == true) {
-    const float z = current_position[Z_AXIS] + counter;
-    line_to_z(constrain(z, -Z_OFFSET_CLEARANCE, Z_OFFSET_CLEARANCE));
-  }
-  counter = 0;
+  inline void manage_one_button_actions() {
+    #if ENABLED(ONE_BUTTON_ROTARY)
+      if (live_z && wait_for_click) {
+        const float z = current_position[Z_AXIS] + counter;
+        line_to_z(constrain(z, -Z_OFFSET_CLEARANCE, Z_OFFSET_CLEARANCE));
+      }
+      counter = 0;
+    #endif
   if (shortPress) {
     shortPress = false;
     delay(100);
@@ -15813,16 +15848,16 @@ void idle(
   #if ENABLED(SDCARD_AUTOCHECK)
     CheckSDcard();
   #endif
-  
+
   lcd_update();
 
   host_keepalive();
 
   #if ENABLED(ONE_BUTTON)
-    manage_one_button_actions(); 
-	manage_one_button_status();
-	manage_encoder_movement();
-	adjust_zprobe_offset();
+    manage_one_button_status();
+    manage_encoder_movement();
+    adjust_zprobe_offset();
+    manage_one_button_actions();
   #endif
   
   #if ENABLED(FILAMENT_AUTOLOAD)
@@ -15956,6 +15991,10 @@ void setup() {
   #if ENABLED(ONE_BUTTON)
     SET_INPUT_PULLUP(ONE_BUTTON_PIN);
     WRITE(ONE_BUTTON_PIN, HIGH);
+    #if ENABLED(ONE_BUTTON_ROTARY)
+      SET_INPUT_PULLUP(ONE_BUTTON_ROTARY_PIN_A);
+      SET_INPUT_PULLUP(ONE_BUTTON_ROTARY_PIN_B);
+    #endif
   #endif
 	
   #if ENABLED(SDCARD_AUTOCHECK)
