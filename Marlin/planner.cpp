@@ -87,6 +87,10 @@
 
 Planner planner;
 
+#if FAN_COUNT > 0
+  static uint8_t planner_fan_speed[FAN_COUNT];
+#endif
+
   // public:
 
 /**
@@ -702,8 +706,17 @@ void Planner::init() {
  */
 void Planner::calculate_trapezoid_for_block(block_t* const block, const float &entry_factor, const float &exit_factor) {
 
-  uint32_t initial_rate = CEIL(block->nominal_rate * entry_factor),
-           final_rate = CEIL(block->nominal_rate * exit_factor); // (steps per second)
+  const uint32_t nominal_rate = block->nominal_rate;
+
+  uint32_t initial_rate, final_rate; // (steps per second)
+
+  if (entry_factor == 1.0f && exit_factor == 1.0f) {
+    initial_rate = final_rate = nominal_rate;
+  }
+  else {
+    initial_rate = CEIL(nominal_rate * entry_factor);
+    final_rate = CEIL(nominal_rate * exit_factor);
+  }
 
   // Limit minimal step rate (Otherwise the timer will overflow.)
   NOLESS(initial_rate, uint32_t(MINIMAL_STEP_RATE));
@@ -1172,7 +1185,8 @@ void Planner::check_axes_activity() {
   uint8_t axis_active[NUM_AXIS] = { 0 };
 
   #if FAN_COUNT > 0
-    uint8_t tail_fan_speed[FAN_COUNT] = { 0 };
+    uint8_t (&tail_fan_speed)[FAN_COUNT] = planner_fan_speed;
+    ZERO(tail_fan_speed);
   #endif
 
   #if ENABLED(BARICUDA)

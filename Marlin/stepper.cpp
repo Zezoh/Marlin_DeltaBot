@@ -364,8 +364,10 @@ void Stepper::wake_up() {
  */
 void Stepper::set_directions() {
 
+  const uint8_t dir_bits = last_direction_bits;
+
   #define SET_STEP_DIR(A) \
-    if (motor_direction(_AXIS(A))) { \
+    if (TEST(dir_bits, _AXIS(A))) { \
       A##_APPLY_DIR(INVERT_## A##_DIR, false); \
       count_direction[_AXIS(A)] = -1; \
     } \
@@ -389,7 +391,7 @@ void Stepper::set_directions() {
 
   #if DISABLED(LIN_ADVANCE)
     #if ENABLED(MIXING_EXTRUDER)
-      if (motor_direction(E_AXIS)) {
+      if (TEST(dir_bits, E_AXIS)) {
         MIXING_STEPPERS_LOOP(j) REV_E_DIR(j);
         count_direction[E_AXIS] = -1;
       }
@@ -398,7 +400,7 @@ void Stepper::set_directions() {
         count_direction[E_AXIS] = 1;
       }
     #else
-      if (motor_direction(E_AXIS)) {
+      if (TEST(dir_bits, E_AXIS)) {
         REV_E_DIR(active_extruder);
         count_direction[E_AXIS] = -1;
       }
