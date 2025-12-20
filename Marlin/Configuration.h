@@ -418,9 +418,9 @@
   //#define DEFAULT_Kd 440
 
   //E3D with 30MM fan
-   #define DEFAULT_Kp 23.48
-   #define DEFAULT_Ki 2.03
-   #define DEFAULT_Kd 67.80
+   #define DEFAULT_Kp 52.88
+   #define DEFAULT_Ki 10.41
+   #define DEFAULT_Kd 67.15
 
 #endif // PIDTEMP
 
