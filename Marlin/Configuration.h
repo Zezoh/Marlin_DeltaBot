@@ -581,10 +581,10 @@
   #define DELTA_PRINTABLE_RADIUS 90.0 //100.0 // mm
 
   // Center-to-center distance of the holes in the diagonal push rods.
-  #define DELTA_DIAGONAL_ROD 225.00 //239.50 // mm
+  #define DELTA_DIAGONAL_ROD 210.00 //239.50 // mm
 
   // height from z=0 to home position
-  #define DELTA_HEIGHT 190.00 // get this value from auto calibrate
+  #define DELTA_HEIGHT 225.00 // get this value from auto calibrate
 
   #define DELTA_ENDSTOP_ADJ { 0.0, 0.0, 0.0 } // get these from auto calibrate
 
@@ -898,13 +898,13 @@
 #define MIN_PROBE_EDGE 15
 
 // X and Y axis travel speed (mm/m) between probes
-#define XY_PROBE_SPEED 3600 // 3600
+#define XY_PROBE_SPEED 2500 // 3600
 
 // Feedrate (mm/m) for the first approach when double-probing (MULTIPLE_PROBING == 2)
 #define Z_PROBE_SPEED_FAST 3000 // 3000
 
 // Feedrate (mm/m) for the "accurate" probe of each point
-#define Z_PROBE_SPEED_SLOW 460 // (Z_PROBE_SPEED_FAST) / 12
+#define Z_PROBE_SPEED_SLOW 600 // (Z_PROBE_SPEED_FAST) / 12
 
 // The number of probes to perform at each point.
 //   Set to 2 for a fast/slow probe, using the second probe result.
