@@ -815,6 +815,10 @@
   //#define DOUBLECLICK_FOR_Z_BABYSTEPPING // Double-click on the Status Screen for Z Babystepping.
   #define DOUBLECLICK_MAX_INTERVAL 1250 // Maximum interval between clicks, in milliseconds.
                                         // Note: Extra time may be added to mitigate controller latency.
+  //#define DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY // Double-click the one-button rotary while printing to babystep Z.
+  #if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY)
+    #define DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY_TIMEOUT 10 // (seconds) How long rotary babystepping stays active.
+  #endif
   //#define BABYSTEP_ZPROBE_GFX_OVERLAY // Enable graphical overlay on Z-offset editor
 #endif
 

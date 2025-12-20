@@ -15430,6 +15430,8 @@ void manage_one_button_status() {
 
     float counter = 0;
     bool live_z = false;
+    bool rotary_babystep_active = false;
+    millis_t rotary_babystep_expire_ms = 0;
 
     #ifndef ONE_BUTTON_ROTARY_PIN_A
       #define ONE_BUTTON_ROTARY_PIN_A 52
@@ -15480,6 +15482,7 @@ void manage_one_button_status() {
       wait_for_click = false;
       #if ENABLED(ONE_BUTTON_ROTARY)
         live_z = false;
+        rotary_babystep_active = false;
       #endif
       shortPress = false;
     }
@@ -15487,6 +15490,13 @@ void manage_one_button_status() {
     #if ENABLED(ONE_BUTTON_ROTARY)
       if (doubleClick) { // double click to start activate the probe offset wizard
         doubleClick = false;
+        #if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY) && ENABLED(BABYSTEPPING)
+          if (printer_states.activity_state == ACTIVITY_PRINTING) {
+            rotary_babystep_active = true;
+            rotary_babystep_expire_ms = millis() + (millis_t)DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY_TIMEOUT * 1000UL;
+            return;
+          }
+        #endif
         live_z = true;
         enqueue_and_echo_commands_P(PSTR("G33 P-1"));
       }
@@ -15509,6 +15519,19 @@ inline void line_to_z(const float & z) {
 
   inline void manage_one_button_actions() {
     #if ENABLED(ONE_BUTTON_ROTARY)
+      #if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY) && ENABLED(BABYSTEPPING)
+        if (rotary_babystep_active) {
+          if (ELAPSED(millis(), rotary_babystep_expire_ms))
+            rotary_babystep_active = false;
+          else if (counter != 0) {
+            const float zdelta = counter;
+            thermalManager.babystep_axis(Z_AXIS, zdelta * planner.axis_steps_per_mm[Z_AXIS]);
+            #if ENABLED(BABYSTEP_ZPROBE_OFFSET)
+              mod_zprobe_zoffset(zdelta);
+            #endif
+          }
+        }
+      #endif
       if (live_z && wait_for_click) {
         const float z = current_position[Z_AXIS] + counter;
         line_to_z(constrain(z, -Z_OFFSET_CLEARANCE, Z_OFFSET_CLEARANCE));
