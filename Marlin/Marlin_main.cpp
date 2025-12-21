@@ -819,6 +819,10 @@ typedef struct {
 } PrinterStates;
 PrinterStates printer_states;
 
+inline bool calibration_in_progress() {
+  return printer_states.activity_state == ACTIVITY_STARTUP_CALIBRATION;
+}
+
 /**
  * ***************************************************************************
  * ******************************** FUNCTIONS ********************************
@@ -2916,7 +2920,13 @@ void clean_up_after_endstop_or_probe_move() {
     ;
 
     const float old_feedrate_mm_s = feedrate_mm_s;
-    feedrate_mm_s = XY_PROBE_FEEDRATE_MM_S;
+    const float calibration_xy_feedrate = MIN(XY_PROBE_FEEDRATE_MM_S, MIN(planner.max_feedrate_mm_s[X_AXIS], planner.max_feedrate_mm_s[Y_AXIS]));
+    feedrate_mm_s = calibration_xy_feedrate;
+
+    #if ENABLED(DEBUG_LEVELING_FEATURE)
+      if (DEBUGGING(LEVELING) && calibration_xy_feedrate < XY_PROBE_FEEDRATE_MM_S)
+        SERIAL_ECHOLNPAIR("[cal] XY feed clamped to max=", calibration_xy_feedrate);
+    #endif
 
     // Move the probe to the starting XYZ
     do_blocking_move_to(nx, ny, nz);
@@ -6532,11 +6542,20 @@ void home_all_axes() { gcode_G28(true); }
    *      V0  Dry-run mode. Report settings and probe results. No calibration.
    *      V1  Report start and end settings only
    *      V2  Report settings at each iteration
-   *      V3  Report settings and probe results
-   *
-   *   E   Engage the probe for each point
-   */
+  *      V3  Report settings and probe results
+  *
+  *   E   Engage the probe for each point
+  */
   inline void gcode_G33() {
+
+    const ActivityState previous_activity = printer_states.activity_state;
+    struct CalibrationActivityGuard {
+      const ActivityState prior;
+      CalibrationActivityGuard(const ActivityState prev) : prior(prev) {
+        printer_states.activity_state = ACTIVITY_STARTUP_CALIBRATION;
+      }
+      ~CalibrationActivityGuard() { printer_states.activity_state = prior; }
+    } calibration_guard(previous_activity);
 
     const int8_t probe_points = parser.intval('P', DELTA_CALIBRATION_DEFAULT_POINTS);
     if (!WITHIN(probe_points, -1, 10)) {
@@ -15634,8 +15653,72 @@ inline void line_to_z(const float &z) {
       SERIAL_ECHOLNPGM("One Button: Unload Filament");
       auto_unload_filament();
       home_all_axes();
-      cooldown();
+  cooldown();
+}
+
+#if ENABLED(DEBUG_LEVELING_FEATURE)
+  enum class IdleSection : uint8_t {
+    SD_CARD,
+    LCD,
+    HOST_KEEPALIVE,
+    ONE_BUTTON_STATUS,
+    ROTARY,
+    Z_OFFSET,
+    ONE_BUTTON_ACTIONS,
+    FILAMENT_AUTOLOAD,
+    SINGLE_LED,
+    INACTIVITY,
+    COUNT
+  };
+
+  struct IdleTiming {
+    uint32_t max_us = 0;
+    uint16_t overruns = 0;
+  };
+
+  static IdleTiming idle_timing[(int)IdleSection::COUNT];
+  static millis_t next_idle_debug_ms = 0;
+
+  inline void report_idle_timing(const IdleSection section, const uint32_t duration_us) {
+    IdleTiming &slot = idle_timing[(int)section];
+    if (duration_us > slot.max_us) slot.max_us = duration_us;
+    if (duration_us > 2500) { // Any task taking >2.5ms risks visible motion jitter
+      slot.overruns++;
+      const millis_t now_ms = millis();
+      if (ELAPSED(now_ms, next_idle_debug_ms)) {
+        next_idle_debug_ms = now_ms + 500; // throttle debug spam
+        SERIAL_ECHOPGM("[idle]");
+        switch (section) {
+          case IdleSection::SD_CARD:           SERIAL_ECHOPGM(" sd "); break;
+          case IdleSection::LCD:               SERIAL_ECHOPGM(" lcd "); break;
+          case IdleSection::HOST_KEEPALIVE:    SERIAL_ECHOPGM(" host "); break;
+          case IdleSection::ONE_BUTTON_STATUS: SERIAL_ECHOPGM(" onebtn_status "); break;
+          case IdleSection::ROTARY:            SERIAL_ECHOPGM(" rotary "); break;
+          case IdleSection::Z_OFFSET:          SERIAL_ECHOPGM(" z_offset "); break;
+          case IdleSection::ONE_BUTTON_ACTIONS:SERIAL_ECHOPGM(" onebtn_action "); break;
+          case IdleSection::FILAMENT_AUTOLOAD: SERIAL_ECHOPGM(" filament "); break;
+          case IdleSection::SINGLE_LED:        SERIAL_ECHOPGM(" led "); break;
+          case IdleSection::INACTIVITY:        SERIAL_ECHOPGM(" manage_inact "); break;
+          default: break;
+        }
+        SERIAL_ECHOPAIR("us=", duration_us);
+        SERIAL_ECHOPAIR(" max=", slot.max_us);
+        SERIAL_ECHOLNPAIR(" count=", slot.overruns);
+      }
     }
+  }
+
+  struct IdleTimer {
+    const IdleSection section;
+    const uint32_t start_us;
+    IdleTimer(const IdleSection s) : section(s), start_us(micros()) {}
+    ~IdleTimer() { report_idle_timing(section, micros() - start_us); }
+  };
+
+  #define IDLE_TIME_MONITOR(S) IdleTimer idle_timer_##S(IdleSection::S)
+#else
+  #define IDLE_TIME_MONITOR(S)
+#endif
   }
 }
 
@@ -15862,35 +15945,53 @@ void idle(
   #if ENABLED(MAX7219_DEBUG)
     max7219.idle_tasks();
   #endif
-  
+
   #if ENABLED(SDCARD_AUTOCHECK)
-    CheckSDcard();
+    if (!calibration_in_progress()) {
+      IDLE_TIME_MONITOR(SD_CARD);
+      CheckSDcard();
+    }
   #endif
 
-  lcd_update();
+  {
+    IDLE_TIME_MONITOR(LCD);
+    lcd_update();
+  }
 
-  host_keepalive();
+  {
+    IDLE_TIME_MONITOR(HOST_KEEPALIVE);
+    host_keepalive();
+  }
 
   #if ENABLED(ONE_BUTTON)
+    IDLE_TIME_MONITOR(ONE_BUTTON_STATUS);
     manage_one_button_status();
+    IDLE_TIME_MONITOR(ROTARY);
     manage_encoder_movement();
+    IDLE_TIME_MONITOR(Z_OFFSET);
     adjust_zprobe_offset();
+    IDLE_TIME_MONITOR(ONE_BUTTON_ACTIONS);
     manage_one_button_actions();
   #endif
-  
+
   #if ENABLED(FILAMENT_AUTOLOAD)
-	clear_wait_for_filament();
+    IDLE_TIME_MONITOR(FILAMENT_AUTOLOAD);
+    clear_wait_for_filament();
   #endif
-  
+
   #if ENABLED(ONE_LED)
+    IDLE_TIME_MONITOR(SINGLE_LED);
     manage_one_led();
   #endif
-  
-  manage_inactivity(
-    #if ENABLED(ADVANCED_PAUSE_FEATURE)
-      no_stepper_sleep
-    #endif
-  );
+
+  {
+    IDLE_TIME_MONITOR(INACTIVITY);
+    manage_inactivity(
+      #if ENABLED(ADVANCED_PAUSE_FEATURE)
+        no_stepper_sleep
+      #endif
+    );
+  }
 
   thermalManager.manage_heater();
 
