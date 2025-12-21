@@ -306,6 +306,7 @@ class Stepper {
       static uint16_t LA_current_adv_steps, LA_final_adv_steps, LA_max_adv_steps; // Copy from current executed block. Needed because current_block is set to NULL "too early".
       static int8_t LA_steps;
       static bool LA_use_advance_lead;
+      static float LA_step_rate_ratio;
     #endif // LIN_ADVANCE
 
     static int32_t ticks_nominal;
@@ -368,7 +369,8 @@ class Stepper {
     FORCE_INLINE static void quick_stop() { abort_current_block = true; }
 
     // The direction of a single motor
-    FORCE_INLINE static bool motor_direction(const AxisEnum axis) { return TEST(last_direction_bits, axis); }
+    FORCE_INLINE static uint8_t direction_bits() { return last_direction_bits; }
+    FORCE_INLINE static bool motor_direction(const AxisEnum axis, const uint8_t bits = direction_bits()) { return TEST(bits, axis); }
 
     // The last movement direction was not null on the specified axis. Note that motor direction is not necessarily the same.
     FORCE_INLINE static bool axis_is_moving(const AxisEnum axis) { return TEST(axis_did_move, axis); }
