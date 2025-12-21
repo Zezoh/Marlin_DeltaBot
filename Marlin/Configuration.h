@@ -600,7 +600,6 @@
   #define DELTA_RADIUS_TRIM_TOWER { 0.0, 0.0, 0.0 }
   //#define DELTA_DIAGONAL_ROD_TRIM_TOWER { 60.0, 60.0, 60.0 }
 
-  #define REQUIRED_PRINT_SIZE 60
 
 #endif
 
