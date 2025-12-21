@@ -419,9 +419,9 @@
   //#define DEFAULT_Kd 440
 
   //E3D with 30MM fan
-   #define DEFAULT_Kp 23.48
-   #define DEFAULT_Ki 2.03
-   #define DEFAULT_Kd 67.80
+   #define DEFAULT_Kp 52.88
+   #define DEFAULT_Ki 10.41
+   #define DEFAULT_Kd 67.15
 
 #endif // PIDTEMP
 
@@ -580,7 +580,7 @@
   #endif
 
   // Print surface diameter/2 minus unreachable space (avoid collisions with vertical towers).
-  #define DELTA_PRINTABLE_RADIUS 80.0 //100.0 // mm
+  #define DELTA_PRINTABLE_RADIUS 85.0 //100.0 // mm
 
   // Center-to-center distance of the holes in the diagonal push rods.
   #define DELTA_DIAGONAL_ROD 210.00 //239.50 // mm
@@ -601,7 +601,6 @@
   // delta radius and diaginal rod adjustments measured in mm
   #define DELTA_RADIUS_TRIM_TOWER { 0.0, 0.0, 0.0 }
   //#define DELTA_DIAGONAL_ROD_TRIM_TOWER { 60.0, 60.0, 60.0 }
-
 #endif
 
 //===========================================================================
@@ -731,7 +730,7 @@
  * Override with M203
  *                                      X, Y, Z, E0 [, E1[, E2[, E3[, E4]]]]
  */
-#define DEFAULT_MAX_FEEDRATE          { 280, 280, 280, 280 }
+#define DEFAULT_MAX_FEEDRATE          { 200, 200, 200, 120 }
 
 /**
  * Default Max Acceleration (change/s) change = mm/s
@@ -739,7 +738,7 @@
  * Override with M201
  *                                      X, Y, Z, E0 [, E1[, E2[, E3[, E4]]]]
  */
-#define DEFAULT_MAX_ACCELERATION      { 6000, 6000, 6000, 8000 }
+#define DEFAULT_MAX_ACCELERATION      { 3000, 3000, 3000, 5000 }
 
 /**
  * Default Acceleration (change/s) change = mm/s
@@ -749,9 +748,9 @@
  *   M204 R    Retract Acceleration
  *   M204 T    Travel Acceleration
  */
-#define DEFAULT_ACCELERATION          4500 // X, Y, Z and E acceleration for printing moves
-#define DEFAULT_RETRACT_ACCELERATION  4500 // E acceleration for retracts
-#define DEFAULT_TRAVEL_ACCELERATION   4500 // X, Y, Z acceleration for travel (non printing) moves
+#define DEFAULT_ACCELERATION          2000 // X, Y, Z and E acceleration for printing moves
+#define DEFAULT_RETRACT_ACCELERATION  3000 // E acceleration for retracts
+#define DEFAULT_TRAVEL_ACCELERATION   2000 // X, Y, Z acceleration for travel (non printing) moves
 
 /**
  * Default Jerk (mm/s)
@@ -761,10 +760,10 @@
  * When changing speed and direction, if the difference is less than the
  * value set here, it may happen instantaneously.
  */
-#define DEFAULT_XJERK                 25.0
+#define DEFAULT_XJERK                 8.0
 #define DEFAULT_YJERK                 DEFAULT_XJERK
 #define DEFAULT_ZJERK                 DEFAULT_XJERK // Must be same as XY for delta
-#define DEFAULT_EJERK                 25.0
+#define DEFAULT_EJERK                 8.0
 
 /**
  * S-Curve Acceleration
@@ -976,7 +975,7 @@
  *     But: `M851 Z+1` with a CLEARANCE of 2  =>  2mm from bed to nozzle.
  */
 #define Z_CLEARANCE_DEPLOY_PROBE    0 // Z Clearance for Deploy/Stow
-#define Z_CLEARANCE_BETWEEN_PROBES  3 // Z Clearance between probe points
+#define Z_CLEARANCE_BETWEEN_PROBES  5 // Z Clearance between probe points
 #define Z_CLEARANCE_MULTI_PROBE     2 // Z Clearance between multiple probes
 #define Z_OFFSET_CLEARANCE          3 // Z Clearance for auto z offset
 //#define Z_AFTER_PROBING           3 // Z position after probing is done
