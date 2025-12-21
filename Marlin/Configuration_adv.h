@@ -937,16 +937,28 @@
 // The number of linear motions that can be in the plan at any give time.
 // THE BLOCK_BUFFER_SIZE NEEDS TO BE A POWER OF 2 (e.g. 8, 16, 32) because shifts and ors are used to do the ring-buffering.
 #if ENABLED(SDSUPPORT)
-  #define BLOCK_BUFFER_SIZE 16 // SD,LCD,Buttons take more memory, block buffer needs to be smaller
+  #ifdef __AVR_ATmega2560__
+    #define BLOCK_BUFFER_SIZE 8  // Tighten buffer for ATmega2560 RAM while SD and UI are active
+  #else
+    #define BLOCK_BUFFER_SIZE 16 // SD,LCD,Buttons take more memory, block buffer needs to be smaller
+  #endif
 #else
-  #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+  #ifdef __AVR_ATmega2560__
+    #define BLOCK_BUFFER_SIZE 8  // Favor free RAM on 8-bit builds
+  #else
+    #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+  #endif
 #endif
 
 // @section serial
 
 // The ASCII buffer for serial input
 #define MAX_CMD_SIZE 96
-#define BUFSIZE 4
+#ifdef __AVR_ATmega2560__
+  #define BUFSIZE 3  // Trimmed input queue to save SRAM on ATmega2560
+#else
+  #define BUFSIZE 4
+#endif
 
 // Transmission to Host Buffer Size
 // To save 386 bytes of PROGMEM (and TX_BUFFER_SIZE+3 bytes of RAM) set to 0.

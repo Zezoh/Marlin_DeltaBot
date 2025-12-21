@@ -542,8 +542,9 @@
 
   // Make delta curves from many straight lines (linear interpolation).
   // This is a trade-off between visible corners (not enough segments)
-  // and processor overload (too many expensive sqrt calls).
-  #define DELTA_SEGMENTS_PER_SECOND 100
+  // and processor overload (too many expensive sqrt calls). Trimmed for AVR
+  // builds to keep the 16MHz ATmega2560 motion planner responsive.
+  #define DELTA_SEGMENTS_PER_SECOND 80
   
 
   //Fast inverse sqrt from Quake III Arena                                                
