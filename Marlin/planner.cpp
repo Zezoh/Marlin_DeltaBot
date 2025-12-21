@@ -2221,7 +2221,9 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
           #if ENABLED(LA_DEBUG)
             if (accel > max_accel_steps_per_s2) SERIAL_ECHOLNPGM("Acceleration limited.");
           #endif
-          NOMORE(accel, max_accel_steps_per_s2);
+          #if DISABLED(LA_ZERO_SLOWDOWN)
+            NOMORE(accel, max_accel_steps_per_s2);
+          #endif
         }
       }
     #endif
@@ -2259,13 +2261,24 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   #endif
   #if ENABLED(LIN_ADVANCE)
     if (block->use_advance_lead) {
-      block->advance_speed = (STEPPER_TIMER_RATE) / (extruder_advance_K * block->e_D_ratio * block->acceleration * axis_steps_per_mm[E_AXIS_N]);
-      #if ENABLED(LA_DEBUG)
-        if (extruder_advance_K * block->e_D_ratio * block->acceleration * 2 < SQRT(block->nominal_speed_sqr) * block->e_D_ratio)
-          SERIAL_ECHOLNPGM("More than 2 steps per eISR loop executed.");
-        if (block->advance_speed < 200)
-          SERIAL_ECHOLNPGM("eISR running at > 10kHz.");
-      #endif
+      const float advance_divisor = extruder_advance_K * block->e_D_ratio * block->acceleration * axis_steps_per_mm[E_AXIS_N];
+
+      // Sanity-check the divisor to avoid inf / nan ISR rates from extreme configuration values
+      if (advance_divisor > 0 && isfinite(advance_divisor)) {
+        block->advance_speed = (STEPPER_TIMER_RATE) / advance_divisor;
+        #if ENABLED(LA_DEBUG)
+          if (advance_divisor * 2 < SQRT(block->nominal_speed_sqr) * block->e_D_ratio)
+            SERIAL_ECHOLNPGM("More than 2 steps per eISR loop executed.");
+          if (block->advance_speed < 200)
+            SERIAL_ECHOLNPGM("eISR running at > 10kHz.");
+        #endif
+
+        // If the calculated ISR rate is effectively disabled, drop advance for this block
+        if (!block->advance_speed)
+          block->use_advance_lead = false;
+      }
+      else
+        block->use_advance_lead = false;
     }
   #endif
 

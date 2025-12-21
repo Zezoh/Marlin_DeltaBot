@@ -306,6 +306,7 @@ class Stepper {
       static uint16_t LA_current_adv_steps, LA_final_adv_steps, LA_max_adv_steps; // Copy from current executed block. Needed because current_block is set to NULL "too early".
       static int8_t LA_steps;
       static bool LA_use_advance_lead;
+      static float LA_step_rate_ratio;
     #endif // LIN_ADVANCE
 
     static int32_t ticks_nominal;

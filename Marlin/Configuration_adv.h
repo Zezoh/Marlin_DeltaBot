@@ -833,12 +833,14 @@
  * If this algorithm produces a higher speed offset than the extruder can handle (compared to E jerk)
  * print acceleration will be reduced during the affected moves to keep within the limit.
  *
- * See http://marlinfw.org/docs/features/lin_advance.html for full instructions.
- * Mention @Sebastianv650 on GitHub to alert the author of any issues.
- */
+  * See http://marlinfw.org/docs/features/lin_advance.html for full instructions.
+  * Mention @Sebastianv650 on GitHub to alert the author of any issues.
+  */
 //#define LIN_ADVANCE
 #if ENABLED(LIN_ADVANCE)
   #define LIN_ADVANCE_K 0.0  // Unit: mm compression per 1mm/s extruder speed
+  // Allow Linear Advance to run without slowing down acceleration to respect E jerk
+  //#define LA_ZERO_SLOWDOWN
   //#define LA_DEBUG          // If enabled, this will generate debug information output over USB.
 #endif
 

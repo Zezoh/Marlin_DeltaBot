@@ -175,6 +175,7 @@ uint32_t Stepper::nextMainISR = 0;
   int8_t   Stepper::LA_steps = 0;
 
   bool Stepper::LA_use_advance_lead;
+  float Stepper::LA_step_rate_ratio = 0;
 
 #endif // LIN_ADVANCE
 
@@ -1762,14 +1763,28 @@ uint32_t Stepper::stepper_block_phase_isr() {
           if (active_extruder != last_moved_extruder) LA_current_adv_steps = 0;
         #endif
 
-        if ((LA_use_advance_lead = current_block->use_advance_lead)) {
+        if ((LA_use_advance_lead = current_block->use_advance_lead) && current_block->advance_speed) {
+          const float next_ratio = current_block->steps[E_AXIS]
+            ? float(current_block->steps[E_AXIS]) / float(MAX(current_block->step_event_count, (uint32_t)1))
+            : 0;
+
+          if (LA_step_rate_ratio > 0 && next_ratio > 0) {
+            LA_current_adv_steps = LROUND(float(LA_current_adv_steps) * next_ratio / LA_step_rate_ratio);
+            NOMORE(LA_current_adv_steps, LA_max_adv_steps);
+          }
+
+          LA_step_rate_ratio = next_ratio;
           LA_final_adv_steps = current_block->final_adv_steps;
           LA_max_adv_steps = current_block->max_adv_steps;
           //Start the ISR
           nextAdvanceISR = 0;
           LA_isr_rate = current_block->advance_speed;
         }
-        else LA_isr_rate = LA_ADV_NEVER;
+        else {
+          LA_step_rate_ratio = 0;
+          LA_isr_rate = LA_ADV_NEVER;
+          LA_use_advance_lead = false;
+        }
       #endif
 
       if (current_block->direction_bits != last_direction_bits
