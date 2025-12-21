@@ -1845,11 +1845,6 @@ uint32_t Stepper::stepper_block_phase_isr() {
 uint32_t Stepper::advance_isr() {
   uint32_t interval;
 
-  #if ENABLED(LA_ADVANCE_SANITY_CHECK)
-    // If the caller didn't provide a valid interval, bail out early
-    if (LA_isr_rate <= 1) return LA_ADV_NEVER;
-  #endif
-
   if (LA_use_advance_lead) {
     if (step_events_completed > decelerate_after && LA_current_adv_steps > LA_final_adv_steps) {
       LA_steps--;

@@ -836,8 +836,6 @@
   #define LIN_ADVANCE_K 0.0  // Unit: mm compression per 1mm/s extruder speed
   // Allow Linear Advance to run without slowing down acceleration to respect E jerk
   //#define LA_ZERO_SLOWDOWN
-  // Ignore blocks with invalid linear advance timing to avoid pressure spikes
-  //#define LA_ADVANCE_SANITY_CHECK
   //#define LA_DEBUG          // If enabled, this will generate debug information output over USB.
 #endif
 
