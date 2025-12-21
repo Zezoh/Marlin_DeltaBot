@@ -862,7 +862,7 @@ void Planner::reverse_pass_kernel(block_t* const current, const block_t * const 
 
       const float new_entry_speed_sqr = TEST(current->flag, BLOCK_BIT_NOMINAL_LENGTH)
         ? max_entry_speed_sqr
-        : MIN(max_entry_speed_sqr, max_allowable_speed_sqr(-current->acceleration, next ? next->entry_speed_sqr : sq(float(MINIMUM_PLANNER_SPEED)), current->millimeters));
+        : MIN(max_entry_speed_sqr, max_allowable_speed_sqr(-current->acceleration, next ? next->entry_speed_sqr : current->min_speed_sqr, current->millimeters));
       if (current->entry_speed_sqr != new_entry_speed_sqr) {
 
         // Need to recalculate the block speed - Mark it now, so the stepper
@@ -1103,7 +1103,7 @@ void Planner::recalculate_trapezoids() {
     block_index = next_block_index(block_index);
   }
 
-  // Last/newest block in buffer. Exit speed is set with MINIMUM_PLANNER_SPEED. Always recalculated.
+  // Last/newest block in buffer. Exit speed is set with the block's minimum planner speed. Always recalculated.
   if (next) {
 
     // Mark the next(last) block as RECALCULATE, to prevent the Stepper ISR running it.
@@ -1118,13 +1118,14 @@ void Planner::recalculate_trapezoids() {
       // Block is not BUSY, we won the race against the Stepper ISR:
 
       const float next_nominal_speed = SQRT(next->nominal_speed_sqr),
-                  nomr = 1.0f / next_nominal_speed;
-      calculate_trapezoid_for_block(next, next_entry_speed * nomr, float(MINIMUM_PLANNER_SPEED) * nomr);
+                  nomr = 1.0f / next_nominal_speed,
+                  next_min_speed = SQRT(next->min_speed_sqr);
+      calculate_trapezoid_for_block(next, next_entry_speed * nomr, next_min_speed * nomr);
       #if ENABLED(LIN_ADVANCE)
         if (next->use_advance_lead) {
           const float comp = next->e_D_ratio * extruder_advance_K * axis_steps_per_mm[E_AXIS];
           next->max_adv_steps = next_nominal_speed * comp;
-          next->final_adv_steps = (MINIMUM_PLANNER_SPEED) * comp;
+          next->final_adv_steps = next_min_speed * comp;
         }
       #endif
     }
@@ -2221,7 +2222,9 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
           #if ENABLED(LA_DEBUG)
             if (accel > max_accel_steps_per_s2) SERIAL_ECHOLNPGM("Acceleration limited.");
           #endif
-          NOMORE(accel, max_accel_steps_per_s2);
+          #if DISABLED(LA_ZERO_SLOWDOWN)
+            NOMORE(accel, max_accel_steps_per_s2);
+          #endif
         }
       }
     #endif
@@ -2254,6 +2257,10 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   }
   block->acceleration_steps_per_s2 = accel;
   block->acceleration = accel / steps_per_mm;
+  block->min_speed_sqr = (block->step_event_count && block->millimeters > 0)
+    ? 0.5f * block->acceleration * (block->millimeters / block->step_event_count)
+    : 0.0f;
+  NOMORE(block->min_speed_sqr, block->nominal_speed_sqr);
   #if DISABLED(S_CURVE_ACCELERATION)
     block->acceleration_rate = (uint32_t)(accel * (4096.0f * 4096.0f / (STEPPER_TIMER_RATE)));
   #endif
@@ -2330,7 +2337,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
       // NOTE: Computed without any expensive trig, sin() or acos(), by trig half angle identity of cos(theta).
       if (junction_cos_theta > 0.999999f) {
         // For a 0 degree acute junction, just set minimum junction speed.
-        vmax_junction_sqr = sq(float(MINIMUM_PLANNER_SPEED));
+        vmax_junction_sqr = block->min_speed_sqr;
       }
       else {
         NOLESS(junction_cos_theta, -0.999999f); // Check for numerical round-off to avoid divide by zero.
@@ -2455,12 +2462,14 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   // Max entry speed of this block equals the max exit speed of the previous block.
   block->max_entry_speed_sqr = vmax_junction_sqr;
 
-  // Initialize block entry speed. Compute based on deceleration to user-defined MINIMUM_PLANNER_SPEED.
-  const float v_allowable_sqr = max_allowable_speed_sqr(-block->acceleration, sq(float(MINIMUM_PLANNER_SPEED)), block->millimeters);
+  // Initialize block entry speed. Compute based on deceleration to the block's minimum planner speed.
+  const float v_allowable_sqr = max_allowable_speed_sqr(-block->acceleration, block->min_speed_sqr, block->millimeters);
 
   // If we are trying to add a split block, start with the
   // max. allowed speed to avoid an interrupted first move.
-  block->entry_speed_sqr = !split_move ? sq(float(MINIMUM_PLANNER_SPEED)) : MIN(vmax_junction_sqr, v_allowable_sqr);
+  block->entry_speed_sqr = !split_move
+    ? block->min_speed_sqr
+    : MAX(block->min_speed_sqr, MIN(vmax_junction_sqr, v_allowable_sqr));
 
   // Initialize planner efficiency flags
   // Set flag if block will always reach maximum junction speed regardless of entry/exit speeds.

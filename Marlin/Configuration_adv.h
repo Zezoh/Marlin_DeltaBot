@@ -502,11 +502,6 @@
 // Not working O
 //#define XY_FREQUENCY_LIMIT  15
 
-// Minimum planner junction speed. Sets the default minimum speed the planner plans for at the end
-// of the buffer and all stops. This should not be much greater than zero and should only be changed
-// if unwanted behavior is observed on a user's machine when running at very slow speeds.
-#define MINIMUM_PLANNER_SPEED 0.05 // (mm/sec)
-
 //
 // Use Junction Deviation instead of traditional Jerk Limiting
 //
@@ -833,12 +828,14 @@
  * If this algorithm produces a higher speed offset than the extruder can handle (compared to E jerk)
  * print acceleration will be reduced during the affected moves to keep within the limit.
  *
- * See http://marlinfw.org/docs/features/lin_advance.html for full instructions.
- * Mention @Sebastianv650 on GitHub to alert the author of any issues.
- */
+  * See http://marlinfw.org/docs/features/lin_advance.html for full instructions.
+  * Mention @Sebastianv650 on GitHub to alert the author of any issues.
+  */
 //#define LIN_ADVANCE
 #if ENABLED(LIN_ADVANCE)
   #define LIN_ADVANCE_K 0.0  // Unit: mm compression per 1mm/s extruder speed
+  // Allow Linear Advance to run without slowing down acceleration to respect E jerk
+  //#define LA_ZERO_SLOWDOWN
   //#define LA_DEBUG          // If enabled, this will generate debug information output over USB.
 #endif
 
@@ -931,7 +928,6 @@
 // @section hidden
 
 // The number of linear motions that can be in the plan at any give time.
-// THE BLOCK_BUFFER_SIZE NEEDS TO BE A POWER OF 2 (e.g. 8, 16, 32) because shifts and ors are used to do the ring-buffering.
 #if ENABLED(SDSUPPORT)
   #define BLOCK_BUFFER_SIZE 8 // SD,LCD,Buttons take more memory, block buffer needs to be smaller
 #else
