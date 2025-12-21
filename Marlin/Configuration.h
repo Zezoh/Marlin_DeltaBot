@@ -578,18 +578,18 @@
   #endif
 
   // Print surface diameter/2 minus unreachable space (avoid collisions with vertical towers).
-  #define DELTA_PRINTABLE_RADIUS 105.0 //100.0 // mm
+  #define DELTA_PRINTABLE_RADIUS 85.0 //100.0 // mm
 
   // Center-to-center distance of the holes in the diagonal push rods.
-  #define DELTA_DIAGONAL_ROD 242.00 //239.50 // mm
+  #define DELTA_DIAGONAL_ROD 210.00 //239.50 // mm
 
   // height from z=0 to home position
-  #define DELTA_HEIGHT 285.00 // get this value from auto calibrate
+  #define DELTA_HEIGHT 226.00 // get this value from auto calibrate
 
   #define DELTA_ENDSTOP_ADJ { 0.0, 0.0, 0.0 } // get these from auto calibrate
 
   // Horizontal distance bridged by diagonal push rods when effector is centered.
-  #define DELTA_RADIUS 110.0 //mm  Get this value from auto calibrate
+  #define DELTA_RADIUS 90.0 //mm  Get this value from auto calibrate
 
   // Trim adjustments for individual towers
   // tower angle corrections for X and Y tower / rotate XYZ so Z tower angle = 0
@@ -599,8 +599,6 @@
   // delta radius and diaginal rod adjustments measured in mm
   #define DELTA_RADIUS_TRIM_TOWER { 0.0, 0.0, 0.0 }
   //#define DELTA_DIAGONAL_ROD_TRIM_TOWER { 60.0, 60.0, 60.0 }
-
-  #define REQUIRED_PRINT_SIZE 60
 
 #endif
 
@@ -976,7 +974,7 @@
  *     But: `M851 Z+1` with a CLEARANCE of 2  =>  2mm from bed to nozzle.
  */
 #define Z_CLEARANCE_DEPLOY_PROBE    0 // Z Clearance for Deploy/Stow
-#define Z_CLEARANCE_BETWEEN_PROBES  3 // Z Clearance between probe points
+#define Z_CLEARANCE_BETWEEN_PROBES  5 // Z Clearance between probe points
 #define Z_CLEARANCE_MULTI_PROBE     2 // Z Clearance between multiple probes
 #define Z_OFFSET_CLEARANCE          3 // Z Clearance for auto z offset
 //#define Z_AFTER_PROBING           3 // Z position after probing is done
@@ -1013,9 +1011,9 @@
 // @section machine
 
 // Invert the stepper direction. Change (or reverse the motor connector) if an axis goes the wrong way.
-#define INVERT_X_DIR false // DELTA does not invert
-#define INVERT_Y_DIR false
-#define INVERT_Z_DIR false
+#define INVERT_X_DIR true // DELTA does not invert
+#define INVERT_Y_DIR true
+#define INVERT_Z_DIR true
 
 // @section extruder
 
