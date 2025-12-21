@@ -2266,6 +2266,12 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
       // Sanity-check the divisor to avoid inf / nan ISR rates from extreme configuration values
       if (advance_divisor > 0 && isfinite(advance_divisor)) {
         block->advance_speed = (STEPPER_TIMER_RATE) / advance_divisor;
+
+        #if ENABLED(LA_ADVANCE_SANITY_CHECK)
+          // Ignore absurd rates that would effectively disable advance or overrun the timer
+          if (block->advance_speed < 2 || block->advance_speed >= 0xFFFFFFFFUL)
+            block->advance_speed = 0;
+        #endif
         #if ENABLED(LA_DEBUG)
           if (advance_divisor * 2 < SQRT(block->nominal_speed_sqr) * block->e_D_ratio)
             SERIAL_ECHOLNPGM("More than 2 steps per eISR loop executed.");
