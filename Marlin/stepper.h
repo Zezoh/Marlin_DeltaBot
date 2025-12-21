@@ -309,6 +309,10 @@ class Stepper {
       static float LA_step_rate_ratio;
     #endif // LIN_ADVANCE
 
+    static uint16_t dither_state;  // Pseudo-random source to spread step timing and reduce tonal noise
+
+    static hal_timer_t dither_interval(const hal_timer_t base_interval);
+
     static int32_t ticks_nominal;
     #if DISABLED(S_CURVE_ACCELERATION)
       static uint32_t acc_step_rate; // needed for deceleration start point

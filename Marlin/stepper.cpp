@@ -162,6 +162,7 @@ uint32_t Stepper::advance_dividend[NUM_AXIS] = { 0 },
 #endif
 
 uint32_t Stepper::nextMainISR = 0;
+uint16_t Stepper::dither_state = 0xA53D;
 
 #if ENABLED(LIN_ADVANCE)
 
@@ -1159,6 +1160,27 @@ HAL_STEP_TIMER_ISR {
 
 #define STEP_MULTIPLY(A,B) MultiU24X32toH16(A, B)
 
+FORCE_INLINE hal_timer_t Stepper::dither_interval(const hal_timer_t base_interval) {
+  // Keep very short waits deterministic to protect critical edge cases
+  if (base_interval <= hal_timer_t(STEPPER_TIMER_TICKS_PER_US * 4)) return base_interval;
+
+  // 16-bit Galois LFSR (x^16 + x^14 + x^13 + x^11 + 1) to decorrelate tonal content
+  dither_state = (dither_state >> 1) ^ uint16_t((dither_state & 1U) ? 0xB400U : 0U);
+
+  // Limit jitter to a small fraction of the interval to preserve commanded kinematics
+  const hal_timer_t jitter_window = MAX(hal_timer_t(1), base_interval >> 8); // ~0.4% max
+  int16_t signed_jitter = int16_t(dither_state & 0x0F) - 7;                  // Center around zero
+
+  if (signed_jitter > int16_t(jitter_window)) signed_jitter = int16_t(jitter_window);
+  else if (signed_jitter < -int16_t(jitter_window)) signed_jitter = -int16_t(jitter_window);
+
+  int32_t adjusted = int32_t(base_interval) + signed_jitter;
+  if (adjusted < 1) adjusted = 1;
+  else if (adjusted > int32_t(HAL_TIMER_TYPE_MAX)) adjusted = int32_t(HAL_TIMER_TYPE_MAX);
+
+  return hal_timer_t(adjusted);
+}
+
 void Stepper::isr() {
   DISABLE_ISRS();
 
@@ -1202,6 +1224,9 @@ void Stepper::isr() {
 
     // Limit the value to the maximum possible value of the timer
     NOMORE(interval, HAL_TIMER_TYPE_MAX);
+
+    // Apply small randomized dither to spread tonal components without altering average velocity
+    interval = dither_interval(hal_timer_t(interval));
 
     // Compute the time remaining for the main isr
     nextMainISR -= interval;
