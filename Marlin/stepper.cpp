@@ -1226,7 +1226,13 @@ void Stepper::isr() {
     NOMORE(interval, HAL_TIMER_TYPE_MAX);
 
     // Apply small randomized dither to spread tonal components without altering average velocity
+    // Clamp to the pending interval to avoid underflow when subtracting from countdowns
     interval = dither_interval(hal_timer_t(interval));
+    NOMORE(interval, nextMainISR);
+
+    #if ENABLED(LIN_ADVANCE)
+      if (nextAdvanceISR != LA_ADV_NEVER) NOMORE(interval, nextAdvanceISR);
+    #endif
 
     // Compute the time remaining for the main isr
     nextMainISR -= interval;
