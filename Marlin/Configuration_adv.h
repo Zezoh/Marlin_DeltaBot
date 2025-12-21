@@ -502,10 +502,6 @@
 // Not working O
 //#define XY_FREQUENCY_LIMIT  15
 
-// Legacy minimum planner junction speed placeholder. Minimum speeds are now derived from move
-// acceleration and step length to keep the first step timing realistic.
-#define MINIMUM_PLANNER_SPEED 0.05 // (mm/sec)
-
 //
 // Use Junction Deviation instead of traditional Jerk Limiting
 //
