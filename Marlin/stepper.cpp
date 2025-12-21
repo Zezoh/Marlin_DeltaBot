@@ -163,6 +163,7 @@ uint32_t Stepper::advance_dividend[NUM_AXIS] = { 0 },
 
 uint32_t Stepper::nextMainISR = 0;
 uint16_t Stepper::dither_state = 0xA53D;
+int16_t Stepper::dither_filter = 0;
 
 #if ENABLED(LIN_ADVANCE)
 
@@ -1173,6 +1174,14 @@ FORCE_INLINE hal_timer_t Stepper::dither_interval(const hal_timer_t base_interva
 
   if (signed_jitter > int16_t(jitter_window)) signed_jitter = int16_t(jitter_window);
   else if (signed_jitter < -int16_t(jitter_window)) signed_jitter = -int16_t(jitter_window);
+
+  // Slew-limit jitter to avoid large step-to-step modulations that can excite vibration
+  const int16_t max_slew = int16_t(MAX(1, jitter_window >> 1));
+  int16_t slew = signed_jitter - dither_filter;
+  NOLESS(slew, -max_slew);
+  NOMORE(slew,  max_slew);
+  dither_filter += slew;
+  signed_jitter = dither_filter;
 
   int32_t adjusted = int32_t(base_interval) + signed_jitter;
   if (adjusted < 1) adjusted = 1;

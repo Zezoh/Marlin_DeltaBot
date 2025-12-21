@@ -310,6 +310,7 @@ class Stepper {
     #endif // LIN_ADVANCE
 
     static uint16_t dither_state;  // Pseudo-random source to spread step timing and reduce tonal noise
+    static int16_t dither_filter;  // Slew-limited jitter accumulator to avoid abrupt interval changes
 
     static hal_timer_t dither_interval(const hal_timer_t base_interval);
 
