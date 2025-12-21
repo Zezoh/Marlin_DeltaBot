@@ -502,9 +502,8 @@
 // Not working O
 //#define XY_FREQUENCY_LIMIT  15
 
-// Minimum planner junction speed. Sets the default minimum speed the planner plans for at the end
-// of the buffer and all stops. This should not be much greater than zero and should only be changed
-// if unwanted behavior is observed on a user's machine when running at very slow speeds.
+// Legacy minimum planner junction speed placeholder. Minimum speeds are now derived from move
+// acceleration and step length to keep the first step timing realistic.
 #define MINIMUM_PLANNER_SPEED 0.05 // (mm/sec)
 
 //
@@ -935,7 +934,6 @@
 // @section hidden
 
 // The number of linear motions that can be in the plan at any give time.
-// THE BLOCK_BUFFER_SIZE NEEDS TO BE A POWER OF 2 (e.g. 8, 16, 32) because shifts and ors are used to do the ring-buffering.
 #if ENABLED(SDSUPPORT)
   #define BLOCK_BUFFER_SIZE 8 // SD,LCD,Buttons take more memory, block buffer needs to be smaller
 #else
