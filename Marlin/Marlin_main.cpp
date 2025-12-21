@@ -15515,10 +15515,16 @@ inline void line_to_z(const float &z) {
   planner.buffer_line_kinematic(current_position, planner.max_feedrate_mm_s[Z_AXIS] / 2, active_extruder);
 }
 
-inline void manage_one_button_actions() {
-  #if ENABLED(ONE_BUTTON_ROTARY)
-    #if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY) && ENABLED(BABYSTEPPING)
-      if (rotary_babystep_active) {
+  inline void manage_one_button_actions() {
+    static millis_t next_button_action_ms = 0;
+    const millis_t now = millis();
+    if (PENDING(now, next_button_action_ms)) return;
+
+    const auto set_button_cooldown = [&]() { next_button_action_ms = millis() + 100; };
+
+    #if ENABLED(ONE_BUTTON_ROTARY)
+      #if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY) && ENABLED(BABYSTEPPING)
+        if (rotary_babystep_active) {
         if (ELAPSED(millis(), rotary_babystep_expire_ms))
           rotary_babystep_active = false;
         else if (counter != 0) {
@@ -15537,18 +15543,18 @@ inline void manage_one_button_actions() {
     counter = 0;
   #endif
 
-  if (shortPress) {
-    shortPress = false;
-    delay(100);
+    if (shortPress) {
+      shortPress = false;
+      set_button_cooldown();
 
-    if (printer_states.activity_state != ACTIVITY_CHANGING_FILAMENT) {
-      if (printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
+      if (printer_states.activity_state != ACTIVITY_CHANGING_FILAMENT) {
+        if (printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
         if (!print_job_timer.isPaused() && !card.sdprinting) {
           if (NOT_YET_CALIBRATED) {
             SERIAL_ERRORLNPGM("Printer not yet calibrated. Calibration Started.");
-            set_notify_not_calibrated();
-            enqueue_and_echo_commands_P(PSTR("G33"));
-            return;
+              set_notify_not_calibrated();
+              enqueue_and_echo_commands_P(PSTR("G33"));
+              return;
           }
 
           if (FILAMENT_PRESENT) {
@@ -15569,9 +15575,9 @@ inline void manage_one_button_actions() {
         }
       }
 
-      if (printer_states.activity_state != ACTIVITY_PAUSED) {
-        if (card.sdprinting && print_job_timer.isRunning()) {
-          if (!thermalManager.wait_for_heating(active_extruder)) {
+        if (printer_states.activity_state != ACTIVITY_PAUSED) {
+          if (card.sdprinting && print_job_timer.isRunning()) {
+            if (!thermalManager.wait_for_heating(active_extruder)) {
             card.pauseSDPrint();
             print_job_timer.pause();
             #if ENABLED(PARK_HEAD_ON_PAUSE)
@@ -15587,32 +15593,32 @@ inline void manage_one_button_actions() {
           enqueue_and_echo_commands_P(PSTR("M24"));
         #endif
         SERIAL_ECHOLNPGM("One Button: Printer Resumed");
-        printer_states.activity_state = ACTIVITY_PRINTING;
+          printer_states.activity_state = ACTIVITY_PRINTING;
+        }
+      } else {
+        set_button_cooldown();
+        wait_for_click = false;
       }
-    } else {
-      delay(100);
-      wait_for_click = false;
     }
-  }
 
-  if (longPress) {
-    longPress = false;
-    delay(100);
+    if (longPress) {
+      longPress = false;
+      set_button_cooldown();
 
-    if (printer_states.activity_state == ACTIVITY_PAUSED) {
-      printer_states.activity_state = ACTIVITY_CHANGING_FILAMENT;
-      SERIAL_ECHOLNPGM("One Button: Changing Filament");
-      auto_unload_filament();
-      auto_load_filament();
+      if (printer_states.activity_state == ACTIVITY_PAUSED) {
+        printer_states.activity_state = ACTIVITY_CHANGING_FILAMENT;
+        SERIAL_ECHOLNPGM("One Button: Changing Filament");
+        auto_unload_filament();
+        auto_load_filament();
       printer_states.activity_state = ACTIVITY_PAUSED;
-    } else if (FILAMENT_PRESENT && printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
-      if (thermalManager.tooColdToExtrude(active_extruder)) {
-        thermalManager.setTargetHotend(PREHEAT_1_TEMP_HOTEND, target_extruder);
-        SERIAL_ECHOLNPGM("One Button: Heating..");
-        delay(100);
-        do_blocking_move_to_z(delta_clip_start_height);
-        while (thermalManager.wait_for_heating(active_extruder)) idle();
-      }
+      } else if (FILAMENT_PRESENT && printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
+        if (thermalManager.tooColdToExtrude(active_extruder)) {
+          thermalManager.setTargetHotend(PREHEAT_1_TEMP_HOTEND, target_extruder);
+          SERIAL_ECHOLNPGM("One Button: Heating..");
+          set_button_cooldown();
+          do_blocking_move_to_z(delta_clip_start_height);
+          while (thermalManager.wait_for_heating(active_extruder)) idle();
+        }
       SERIAL_ECHOLNPGM("One Button: Unload Filament");
       auto_unload_filament();
       home_all_axes();
