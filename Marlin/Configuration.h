@@ -53,6 +53,7 @@
 
 #define ONE_BUTTON
 #define ONE_BUTTON_INVERTING true
+//#define ONE_BUTTON_ROTARY  // Use a dedicated KY-040 rotary on the default RAMPS 1.4 pins
 
 #define SDCARD_AUTOCHECK
 #define SDCARD_DETECT_PIN 31
@@ -541,7 +542,8 @@
 
   // Make delta curves from many straight lines (linear interpolation).
   // This is a trade-off between visible corners (not enough segments)
-  // and processor overload (too many expensive sqrt calls).
+  // and processor overload (too many expensive sqrt calls). Trimmed for AVR
+  // builds to keep the 16MHz ATmega2560 motion planner responsive.
   #define DELTA_SEGMENTS_PER_SECOND 80
   
 
@@ -584,7 +586,7 @@
   #define DELTA_DIAGONAL_ROD 210.00 //239.50 // mm
 
   // height from z=0 to home position
-  #define DELTA_HEIGHT 220.00 // get this value from auto calibrate
+  #define DELTA_HEIGHT 225.00 // get this value from auto calibrate
 
   #define DELTA_ENDSTOP_ADJ { 0.0, 0.0, 0.0 } // get these from auto calibrate
 
@@ -599,8 +601,6 @@
   // delta radius and diaginal rod adjustments measured in mm
   #define DELTA_RADIUS_TRIM_TOWER { 0.0, 0.0, 0.0 }
   //#define DELTA_DIAGONAL_ROD_TRIM_TOWER { 60.0, 60.0, 60.0 }
-
-
 #endif
 
 //===========================================================================
