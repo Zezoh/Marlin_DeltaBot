@@ -53,6 +53,9 @@
 
 #define ONE_BUTTON
 #define ONE_BUTTON_INVERTING true
+#define ONE_BUTTON_ROTARY  // Use a dedicated KY-040 rotary on the default RAMPS 1.4 pins
+#define ONE_BUTTON_ROTARY_DEBOUNCE 2   // Minimum milliseconds between rotary state changes
+#define STEPS_PER_ROTATION 0.025f      // Z move per rotary tick (mm)
 
 //#define SDCARD_AUTOCHECK
 //#define SDCARD_DETECT_PIN 31
@@ -541,8 +544,9 @@
 
   // Make delta curves from many straight lines (linear interpolation).
   // This is a trade-off between visible corners (not enough segments)
-  // and processor overload (too many expensive sqrt calls).
-  #define DELTA_SEGMENTS_PER_SECOND 100
+  // and processor overload (too many expensive sqrt calls). Trimmed for AVR
+  // builds to keep the 16MHz ATmega2560 motion planner responsive.
+  #define DELTA_SEGMENTS_PER_SECOND 80
   
 
   //Fast inverse sqrt from Quake III Arena                                                
