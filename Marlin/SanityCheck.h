@@ -678,6 +678,26 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
 #endif
 
 /**
+ * One-button rotary conflicts
+ */
+#if ENABLED(ONE_BUTTON_ROTARY)
+  #if ENABLED(ULTRA_LCD) && (PIN_EXISTS(BTN_ENC) || PIN_EXISTS(BTN_EN1) || PIN_EXISTS(BTN_EN2))
+    #error "ONE_BUTTON_ROTARY can't be used with an LCD that already has a rotary encoder."
+  #endif
+#endif
+
+/**
+ * One-button rotary babystepping requirements
+ */
+#if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY)
+  #if DISABLED(ONE_BUTTON_ROTARY)
+    #error "DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY requires ONE_BUTTON_ROTARY."
+  #elif DISABLED(BABYSTEPPING)
+    #error "DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY requires BABYSTEPPING."
+  #endif
+#endif
+
+/**
  * Bed Heating Options - PID vs Limit Switching
  */
 #if ENABLED(PIDTEMPBED) && ENABLED(BED_LIMIT_SWITCHING)
