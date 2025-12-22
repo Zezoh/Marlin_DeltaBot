@@ -505,30 +505,7 @@ float soft_endstop_min[XYZ] = { X_MIN_BED, Y_MIN_BED, Z_MIN_POS },
 #endif
 
 #if ENABLED(IS_MONO_FAN)
-  #if FAN_COUNT < 1
-    #error "IS_MONO_FAN requires at least one configured fan."
-  #endif
   static millis_t next_fan_auto_regulation_check = 0;
-
-  inline void regulate_mono_fan(const millis_t &ms) {
-    if (!ELAPSED(ms, next_fan_auto_regulation_check)) return;
-
-    float max_temp = 0.0f;
-    HOTEND_LOOP()
-      max_temp = MAX3(max_temp, thermalManager.degHotend(e), thermalManager.degTargetHotend(e));
-
-    int16_t fs = 0;
-    if (max_temp >= MONO_FAN_MIN_TEMP) {
-      fs = fanSpeeds[0];
-      NOLESS(fs, MONO_FAN_MIN_PWM);
-
-      if (!IS_SD_PRINTING())
-        NOLESS(fs, EXTRUDER_AUTO_FAN_SPEED);
-    }
-
-    fanSpeeds[0] = fs;
-    next_fan_auto_regulation_check = ms + 2500UL;
-  }
 #endif
 
 #if ENABLED(USE_CONTROLLER_FAN)
@@ -623,7 +600,7 @@ uint8_t target_extruder;
 * Fast inverse SQRT from Quake III Arena
 * See: https://en.wikipedia.org/wiki/Fast_inverse_square_root
 */
-#if ENABLED(DELTA) && ENABLED(DELTA_FAST_SQRT)
+#if ENABLED(DELTA_FAST_SQRT)
   float Q_rsqrt(float number) {
    long i;
    float x2, y;
@@ -15413,12 +15390,8 @@ static millis_t duration_in_millis = 1000;
       longPressActive = true;
       longPress = true;
     }
-  }
-
-  // Handle release events
-  if (!pressed && buttonActive) {
-    pressDuration = now - buttonTimer;
-    buttonActive = false;
+    
+    pressDuration = millis() - buttonTimer;
 
       if (longPressActive) {
         longPressActive = false;
@@ -15749,7 +15722,27 @@ void manage_inactivity(const bool ignore_stepper_queue/*=false*/) {
   #endif
   
   #if ENABLED(IS_MONO_FAN)
-    regulate_mono_fan(ms);
+  if (ELAPSED(ms, next_fan_auto_regulation_check)) {
+
+    short fs = 0;
+    float max_temp = 0.0;
+
+    HOTEND_LOOP()
+    max_temp = MAX3(max_temp, thermalManager.degHotend(e), thermalManager.degTargetHotend(e));
+    if (max_temp < MONO_FAN_MIN_TEMP) {
+      fs = 0;
+    } else {
+      fs = fanSpeeds[0];
+      NOLESS(fs, MONO_FAN_MIN_PWM);
+    }
+	
+	if (max_temp > MONO_FAN_MIN_TEMP && !IS_SD_PRINTING()) {
+      NOLESS(fs, EXTRUDER_AUTO_FAN_SPEED);
+	}
+	
+    fanSpeeds[0] = fs;
+    next_fan_auto_regulation_check = ms + 2500UL;
+  }
   #endif
 
   #if ENABLED(USE_CONTROLLER_FAN)
