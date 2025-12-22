@@ -44,10 +44,24 @@
 #undef  Z_MIN_PIN          
 #define Z_MIN_PIN          68
 
-#undef  FIL_RUNOUT_PIN   
+#undef  FIL_RUNOUT_PIN
 #define FIL_RUNOUT_PIN     18
 
-#define ONE_BUTTON_PIN 3
+#if ENABLED(ONE_BUTTON_ROTARY)
+  #ifndef ONE_BUTTON_PIN
+    #define ONE_BUTTON_PIN        14
+  #endif
+  #ifndef ONE_BUTTON_ROTARY_PIN_A
+    #define ONE_BUTTON_ROTARY_PIN_A 52
+  #endif
+  #ifndef ONE_BUTTON_ROTARY_PIN_B
+    #define ONE_BUTTON_ROTARY_PIN_B 53
+  #endif
+#else
+  #ifndef ONE_BUTTON_PIN
+    #define ONE_BUTTON_PIN         3
+  #endif
+#endif
 
-#define ONE_LED_PIN 7 
+#define ONE_LED_PIN 7
 
