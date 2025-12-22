@@ -85,8 +85,7 @@ typedef struct {
         entry_speed_sqr,                    // Entry speed at previous-current junction in (mm/sec)^2
         max_entry_speed_sqr,                // Maximum allowable junction entry speed in (mm/sec)^2
         millimeters,                        // The total travel of this block in mm
-        acceleration,                       // acceleration mm/sec^2
-        min_speed_sqr;                      // Minimum planner speed squared (mm/sec)^2
+        acceleration;                       // acceleration mm/sec^2
 
   union {
     // Data used by all move blocks
@@ -151,8 +150,7 @@ typedef struct {
 
 #define HAS_POSITION_FLOAT (ENABLED(LIN_ADVANCE) || HAS_FEEDRATE_SCALING)
 
-static constexpr uint8_t block_mod(const uint8_t n) { return n % BLOCK_BUFFER_SIZE; }
-#define BLOCK_MOD(n) block_mod(n)
+#define BLOCK_MOD(n) ((n)&(BLOCK_BUFFER_SIZE-1))
 
 class Planner {
   public:

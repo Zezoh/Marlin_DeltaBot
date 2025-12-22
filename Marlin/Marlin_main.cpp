@@ -275,6 +275,9 @@
 #include "parser.h"
 
 
+#include <SimpleRotary.h>
+SimpleRotary rotary(52,53,14);
+	
 #if ENABLED(AUTO_POWER_CONTROL)
   #include "power.h"
 #endif
@@ -15345,223 +15348,172 @@ void manage_one_led() {
 
 #if ENABLED(ONE_BUTTON)
 
-static millis_t duration_in_millis = 1000;
+int buttonState = 0; // 0 = not pressed   --- 1 = long pressed --- 2 short pressed
+int duration_in_millis = 1000;
 
-static bool buttonActive = false;     // indicates if the button is active/pressed
-static bool longPressActive = false;  // indicate if the button has been long-pressed
-static bool longPress = false;
-static bool shortPress = false;
-static bool doubleClick = false;
+bool buttonActive = false; // indicates if the button is active/pressed
+bool longPressActive = false; // indicate if the button has been long-pressed
+bool longPress = false;
+bool shortPress = false;
+bool doubleClick = false;
 
-static millis_t buttonTimer = 0;
-static millis_t pressDuration = 0;          // stores the duration (in milliseconds) that the button was pressed/held down for
-static millis_t debounceThreshold = 50;      // the threshold (in milliseconds) for a button press to be confirmed (i.e. not "noise")
-static millis_t lastPressTime = 0;           // stores the time of the last button press
-static millis_t doubleClickThreshold = 500;  // the threshold (in milliseconds) for detecting a double click
+long buttonTimer = 0;
+long pressDuration = 0; // stores the duration (in milliseconds) that the button was pressed/held down for
+long debounceThreshold = 50; // the threshold (in milliseconds) for a button press to be confirmed (i.e. not "noise")
+long lastPressTime = 0; // stores the time of the last button press
+long doubleClickThreshold = 500; // the threshold (in milliseconds) for detecting a double click
 
 void manage_one_button_status() {
-  if (printer_states.activity_state == ACTIVITY_STARTUP_CALIBRATION) return;
 
-  const bool pressed = ONE_BUTTON_PRESSED;
-  const millis_t now = millis();
+  if (printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
+    buttonState = 0;
+    if (ONE_BUTTON_PRESSED) {
 
-  // Detect a new press and capture start time
-  if (pressed && !buttonActive) {
-    buttonActive = true;
-    buttonTimer = now;
-    pressDuration = 0;
-  }
+      if (buttonActive == false) {
+        buttonActive = true;
+      }
+      buttonTimer = millis();
+      buttonState = 1;
+      while ((millis() - buttonTimer) <= duration_in_millis) {
+        if (ONE_BUTTON_RELEASED) {
+          buttonState = 2;
+          break;
+        }
+      }
+    }
+    
+    pressDuration = millis() - buttonTimer;
 
-  if (pressed && buttonActive) {
-    pressDuration = now - buttonTimer;
-
-    // Long press detected once per hold
-    if (!longPressActive && pressDuration >= duration_in_millis) {
+    if (!buttonState) {
+      // TODO nothing is pressed
+    } else if (buttonState == 1 && longPressActive == false) {
       longPressActive = true;
       longPress = true;
-    }
-  }
-
-  // Handle release events
-  if (!pressed && buttonActive) {
-    pressDuration = now - buttonTimer;
-    buttonActive = false;
-
-    if (longPressActive) {
-      longPressActive = false;
-    } else if (pressDuration > debounceThreshold) {
-      if (now - lastPressTime <= doubleClickThreshold)
-        doubleClick = true;
-      else
-        shortPress = true;
-      lastPressTime = now;
+    } else if (buttonState == 2) {
+      if (buttonActive == true) {
+        // reset the long press active state
+        if (longPressActive == true) {
+          longPressActive = false;
+        } else if (pressDuration > debounceThreshold) {
+          if (millis() - lastPressTime <= doubleClickThreshold) {
+            doubleClick = true;
+          } else {
+            shortPress = true;
+          }
+          lastPressTime = millis();
+        }
+      }
+      buttonActive = false;
     }
   }
 }
 
-#if ENABLED(ONE_BUTTON_ROTARY)
-
-  static float counter = 0;
-  static bool live_z = false;
-  static bool rotary_babystep_active = false;
-  static millis_t rotary_babystep_expire_ms = 0;
-
-  #ifndef ONE_BUTTON_ROTARY_PIN_A
-    #define ONE_BUTTON_ROTARY_PIN_A 52
-  #endif
-
-  #ifndef ONE_BUTTON_ROTARY_PIN_B
-    #define ONE_BUTTON_ROTARY_PIN_B 53
-  #endif
-
-  inline void manage_encoder_movement() {
-    static bool initialized = false;
-    static uint8_t last_state = 0;
-
-    const uint8_t current_state = (READ(ONE_BUTTON_ROTARY_PIN_A) << 1) | READ(ONE_BUTTON_ROTARY_PIN_B);
-
-    if (!initialized) {
-      last_state = current_state;
-      initialized = true;
-      return;
-    }
-
-    if (current_state != last_state) {
-      switch ((last_state << 2) | current_state) {
-        case 0b0001:
-        case 0b0111:
-        case 0b1110:
-        case 0b1000:
-          counter += 0.025f;
-          break;
-        case 0b0010:
-        case 0b0100:
-        case 0b1101:
-        case 0b1011:
-          counter -= 0.025f;
-          break;
-      }
-
-      last_state = current_state;
-    }
+  float counter = 0;
+  bool live_z = false; 
+  
+static float manage_encoder_movement() {
+// void manage_encoder_movement() {
+  byte i;
+  // 0 = not turning, 1 = CW, 2 = CCW
+  i = rotary.rotate();
+  if (i == 1) {
+    counter -= 0.025;
+    //SERIAL_ECHOLNPAIR("step CW:", counter);
   }
-
-#else
-
-  inline void manage_encoder_movement() {}
-
-#endif
+  if (i == 2) {
+    counter += 0.025;
+    //SERIAL_ECHOLNPAIR("step CCW:", counter);
+  }
+  return counter;
+}
 
 inline void adjust_zprobe_offset() {
-  if (wait_for_click && shortPress) { // once click to clear and reset values
+  byte c;
+  c = rotary.pushType(1000);
+  if (c == 1 && wait_for_click == true) { // once click to clear and reset values 
     wait_for_click = false;
-    #if ENABLED(ONE_BUTTON_ROTARY)
-      live_z = false;
-      rotary_babystep_active = false;
-    #endif
-    shortPress = false;
+    live_z = false;
   }
-
-  #if ENABLED(ONE_BUTTON_ROTARY)
-    if (doubleClick) { // double click to start activate the probe offset wizard
-      doubleClick = false;
-      #if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY) && ENABLED(BABYSTEPPING)
-        if (printer_states.activity_state == ACTIVITY_PRINTING) {
-          rotary_babystep_active = true;
-          rotary_babystep_expire_ms = millis() + (millis_t)DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY_TIMEOUT * 1000UL;
-          return;
-        }
-      #endif
-      live_z = true;
-      enqueue_and_echo_commands_P(PSTR("G33 P-1"));
-    }
-  #else
-    doubleClick = false;
-  #endif
+  if (c == 3) { // double click t start activite the probe offset wizard 
+    live_z = true;
+    enqueue_and_echo_commands_P(PSTR("G33 P-1"));
+  }
 }
 
 inline void cooldown() {
-  #if FAN_COUNT > 0
-    for (uint8_t i = 0; i < FAN_COUNT; i++) fanSpeeds[i] = 0;
-  #endif
-  thermalManager.disable_all_heaters();
+	#if FAN_COUNT > 0
+	  for (uint8_t i = 0; i < FAN_COUNT; i++) fanSpeeds[i] = 0;
+	#endif
+      thermalManager.disable_all_heaters();
 }
 
-inline void line_to_z(const float &z) {
+inline void line_to_z(const float & z) {
   current_position[Z_AXIS] = z;
-  planner.buffer_line_kinematic(current_position, planner.max_feedrate_mm_s[Z_AXIS] / 2, active_extruder);
+  planner.buffer_line_kinematic(current_position, planner.max_feedrate_mm_s[Z_AXIS]/2, active_extruder);
 }
 
 inline void manage_one_button_actions() {
-  #if ENABLED(ONE_BUTTON_ROTARY)
-    #if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY) && ENABLED(BABYSTEPPING)
-      if (rotary_babystep_active) {
-        if (ELAPSED(millis(), rotary_babystep_expire_ms))
-          rotary_babystep_active = false;
-        else if (counter != 0) {
-          const float zdelta = counter;
-          thermalManager.babystep_axis(Z_AXIS, zdelta * planner.axis_steps_per_mm[Z_AXIS]);
-          #if ENABLED(BABYSTEP_ZPROBE_OFFSET)
-            mod_zprobe_zoffset(zdelta);
-          #endif
-        }
-      }
-    #endif
-    if (live_z && wait_for_click) {
-      const float z = current_position[Z_AXIS] + counter;
-      line_to_z(constrain(z, -Z_OFFSET_CLEARANCE, Z_OFFSET_CLEARANCE));
-    }
-    counter = 0;
-  #endif
 
+  if (live_z == true && wait_for_click == true) {
+    const float z = current_position[Z_AXIS] + counter;
+    line_to_z(constrain(z, -Z_OFFSET_CLEARANCE, Z_OFFSET_CLEARANCE));
+  }
+  counter = 0;
   if (shortPress) {
     shortPress = false;
     delay(100);
 
     if (printer_states.activity_state != ACTIVITY_CHANGING_FILAMENT) {
+      //START PRINT
       if (printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
         if (!print_job_timer.isPaused() && !card.sdprinting) {
-          if (NOT_YET_CALIBRATED) {
-            SERIAL_ERRORLNPGM("Printer not yet calibrated. Calibration Started.");
-            set_notify_not_calibrated();
-            enqueue_and_echo_commands_P(PSTR("G33"));
-            return;
-          }
 
-          if (FILAMENT_PRESENT) {
-            if (card.cardOK) {
-              if (card.isFileOpen()) {
-                enqueue_and_echo_commands_P(PSTR("M24"));
-                printer_states.activity_state = ACTIVITY_PRINTING;
-                SERIAL_ECHOLNPGM("one button: Start asked");
-              } else
-                SERIAL_ECHOLNPGM("one button: Start aborted: No File");
-            } else
-              SERIAL_ECHOLNPGM("one button: Please Insert SD Card");
-          } else {
-            SERIAL_ECHOLNPGM("one button: Start aborted: No filament");
-            set_notify_warning();
+          // SERIAL_ECHOLNPGM("one button: Start pending: Checking sd card content");
+
+          if (NOT_YET_CALIBRATED) {
+            // SERIAL_ERRORLNPGM("Printer not yet calibrated. Please calibrate.");
+			SERIAL_ERRORLNPGM("Printer not yet calibrated. Calibration Started.");
+            set_notify_not_calibrated();
+			enqueue_and_echo_commands_P(PSTR("G33"));
             return;
           }
+			if (FILAMENT_PRESENT) {
+			  if (card.cardOK) {
+				if (card.isFileOpen()) {
+				  enqueue_and_echo_commands_P(PSTR("M24"));
+				  printer_states.activity_state = ACTIVITY_PRINTING;
+				  SERIAL_ECHOLNPGM("one button: Start asked");
+				} else {
+				  SERIAL_ECHOLNPGM("one button: Start aborted: No File");
+				}
+			  } else {
+				SERIAL_ECHOLNPGM("one button: Please Insert SD Card");
+			  }
+			} else {
+			  SERIAL_ECHOLNPGM("one button: Start aborted: No filament");
+			  set_notify_warning();
+			  return;
+			}
         }
       }
-
+      //PAUSE
       if (printer_states.activity_state != ACTIVITY_PAUSED) {
         if (card.sdprinting && print_job_timer.isRunning()) {
           if (!thermalManager.wait_for_heating(active_extruder)) {
             card.pauseSDPrint();
             print_job_timer.pause();
             #if ENABLED(PARK_HEAD_ON_PAUSE)
-              enqueue_and_echo_commands_P(PSTR("M125"));
+            enqueue_and_echo_commands_P(PSTR("M125"));
             #endif
             printer_states.activity_state = ACTIVITY_PAUSED;
             SERIAL_ECHOLNPGM("One Button: Printer Paused");
           }
         }
+      //RESUME
       } else {
         if (card.sdprinting) return;
         #if ENABLED(PARK_HEAD_ON_PAUSE)
-          enqueue_and_echo_commands_P(PSTR("M24"));
+        enqueue_and_echo_commands_P(PSTR("M24"));
         #endif
         SERIAL_ECHOLNPGM("One Button: Printer Resumed");
         printer_states.activity_state = ACTIVITY_PRINTING;
@@ -15571,8 +15523,8 @@ inline void manage_one_button_actions() {
       wait_for_click = false;
     }
   }
-
-  if (longPress) {
+      //CHANGING FILAMENT
+  if (longPress == true) {
     longPress = false;
     delay(100);
 
@@ -15582,20 +15534,35 @@ inline void manage_one_button_actions() {
       auto_unload_filament();
       auto_load_filament();
       printer_states.activity_state = ACTIVITY_PAUSED;
-    } else if (FILAMENT_PRESENT && printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
-      if (thermalManager.tooColdToExtrude(active_extruder)) {
-        thermalManager.setTargetHotend(PREHEAT_1_TEMP_HOTEND, target_extruder);
-        SERIAL_ECHOLNPGM("One Button: Heating..");
-        delay(100);
-        do_blocking_move_to_z(delta_clip_start_height);
-        while (thermalManager.wait_for_heating(active_extruder)) idle();
+    } else {
+      if (FILAMENT_PRESENT && printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
+        if (thermalManager.tooColdToExtrude(active_extruder)) {
+          thermalManager.setTargetHotend(PREHEAT_1_TEMP_HOTEND, target_extruder);
+          SERIAL_ECHOLNPGM("One Button: Heating..");
+          delay(100);
+          do_blocking_move_to_z(delta_clip_start_height);
+          while (thermalManager.wait_for_heating(active_extruder)) idle();
+        }
+        SERIAL_ECHOLNPGM("One Button: Unload Filament");
+        auto_unload_filament();
+        home_all_axes();
+        cooldown();
       }
-      SERIAL_ECHOLNPGM("One Button: Unload Filament");
-      auto_unload_filament();
-      home_all_axes();
-      cooldown();
     }
   }
+	  // if (FILAMENT_NOT_PRESENT && printer_states.activity_state == ACTIVITY_IDLE) {
+		// if (thermalManager.tooColdToExtrude(active_extruder)) {
+		// thermalManager.setTargetHotend(PREHEAT_1_TEMP_HOTEND, target_extruder);
+		// SERIAL_ECHOLNPGM("One Button: Heating..");
+		// delay(100);
+		// do_blocking_move_to_z(delta_clip_start_height);
+		// while (thermalManager.wait_for_heating(active_extruder)) idle();
+	    // }
+	    // SERIAL_ECHOLNPGM("One Button: load Filament");
+	    // auto_load_filament();
+		// home_all_axes();
+		// cooldown()
+	  // }
 }
 
 #endif
@@ -15845,16 +15812,16 @@ void idle(
   #if ENABLED(SDCARD_AUTOCHECK)
     CheckSDcard();
   #endif
-
+  
   lcd_update();
 
   host_keepalive();
 
   #if ENABLED(ONE_BUTTON)
-    manage_one_button_status();
-    manage_encoder_movement();
-    adjust_zprobe_offset();
-    manage_one_button_actions();
+    manage_one_button_actions(); 
+	manage_one_button_status();
+	manage_encoder_movement();
+	adjust_zprobe_offset();
   #endif
   
   #if ENABLED(FILAMENT_AUTOLOAD)
@@ -15988,10 +15955,6 @@ void setup() {
   #if ENABLED(ONE_BUTTON)
     SET_INPUT_PULLUP(ONE_BUTTON_PIN);
     WRITE(ONE_BUTTON_PIN, HIGH);
-    #if ENABLED(ONE_BUTTON_ROTARY)
-      SET_INPUT_PULLUP(ONE_BUTTON_ROTARY_PIN_A);
-      SET_INPUT_PULLUP(ONE_BUTTON_ROTARY_PIN_B);
-    #endif
   #endif
 	
   #if ENABLED(SDCARD_AUTOCHECK)

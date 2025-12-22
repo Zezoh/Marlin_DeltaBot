@@ -502,10 +502,15 @@
 // Not working O
 //#define XY_FREQUENCY_LIMIT  15
 
+// Minimum planner junction speed. Sets the default minimum speed the planner plans for at the end
+// of the buffer and all stops. This should not be much greater than zero and should only be changed
+// if unwanted behavior is observed on a user's machine when running at very slow speeds.
+#define MINIMUM_PLANNER_SPEED 0.05 // (mm/sec)
+
 //
 // Use Junction Deviation instead of traditional Jerk Limiting
 //
-#define JUNCTION_DEVIATION
+//#define JUNCTION_DEVIATION
 #if ENABLED(JUNCTION_DEVIATION)
   #define JUNCTION_DEVIATION_MM 0.02  // (mm) Distance from real junction edge
 #endif
@@ -810,10 +815,6 @@
   //#define DOUBLECLICK_FOR_Z_BABYSTEPPING // Double-click on the Status Screen for Z Babystepping.
   #define DOUBLECLICK_MAX_INTERVAL 1250 // Maximum interval between clicks, in milliseconds.
                                         // Note: Extra time may be added to mitigate controller latency.
-  //#define DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY // Double-click the one-button rotary while printing to babystep Z.
-  #if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY)
-    #define DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY_TIMEOUT 10 // (seconds) How long rotary babystepping stays active.
-  #endif
   //#define BABYSTEP_ZPROBE_GFX_OVERLAY // Enable graphical overlay on Z-offset editor
 #endif
 
@@ -832,14 +833,12 @@
  * If this algorithm produces a higher speed offset than the extruder can handle (compared to E jerk)
  * print acceleration will be reduced during the affected moves to keep within the limit.
  *
-  * See http://marlinfw.org/docs/features/lin_advance.html for full instructions.
-  * Mention @Sebastianv650 on GitHub to alert the author of any issues.
-  */
-//#define LIN_ADVANCE
+ * See http://marlinfw.org/docs/features/lin_advance.html for full instructions.
+ * Mention @Sebastianv650 on GitHub to alert the author of any issues.
+ */
+#define LIN_ADVANCE
 #if ENABLED(LIN_ADVANCE)
   #define LIN_ADVANCE_K 0.0  // Unit: mm compression per 1mm/s extruder speed
-  // Allow Linear Advance to run without slowing down acceleration to respect E jerk
-  //#define LA_ZERO_SLOWDOWN
   //#define LA_DEBUG          // If enabled, this will generate debug information output over USB.
 #endif
 
@@ -858,7 +857,7 @@
 //
 // G2/G3 Arc Support
 //
-//#define ARC_SUPPORT               // Disable this feature to save ~3226 bytes
+#define ARC_SUPPORT               // Disable this feature to save ~3226 bytes
 #if ENABLED(ARC_SUPPORT)
   #define MM_PER_ARC_SEGMENT  1   // Length of each arc segment
   #define N_ARC_CORRECTION   25   // Number of intertpolated segments between corrections
@@ -877,7 +876,7 @@
 #endif
 
 // Moves (or segments) with fewer steps than this will be joined with the next move
-#define MIN_STEPS_PER_SEGMENT 10
+#define MIN_STEPS_PER_SEGMENT 6
 
 /**
  * Minimum delay after setting the stepper DIR (in ns)
@@ -904,7 +903,7 @@
  *
  * Override the default value based on the driver type set in Configuration.h.
  */
-#define MINIMUM_STEPPER_PULSE 2
+//#define MINIMUM_STEPPER_PULSE 2
 
 /**
  * Maximum stepping rate (in Hz) the stepper driver allows
@@ -932,29 +931,18 @@
 // @section hidden
 
 // The number of linear motions that can be in the plan at any give time.
+// THE BLOCK_BUFFER_SIZE NEEDS TO BE A POWER OF 2 (e.g. 8, 16, 32) because shifts and ors are used to do the ring-buffering.
 #if ENABLED(SDSUPPORT)
-  #ifdef __AVR_ATmega2560__
-    #define BLOCK_BUFFER_SIZE 8  // Tighten buffer for ATmega2560 RAM while SD and UI are active
-  #else
-    #define BLOCK_BUFFER_SIZE 16 // SD,LCD,Buttons take more memory, block buffer needs to be smaller
-  #endif
+  #define BLOCK_BUFFER_SIZE 16 // SD,LCD,Buttons take more memory, block buffer needs to be smaller
 #else
-  #ifdef __AVR_ATmega2560__
-    #define BLOCK_BUFFER_SIZE 8  // Favor free RAM on 8-bit builds
-  #else
-    #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
-  #endif
+  #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
 #endif
 
 // @section serial
 
 // The ASCII buffer for serial input
 #define MAX_CMD_SIZE 96
-#ifdef __AVR_ATmega2560__
-  #define BUFSIZE 3  // Trimmed input queue to save SRAM on ATmega2560
-#else
-  #define BUFSIZE 4
-#endif
+#define BUFSIZE 4
 
 // Transmission to Host Buffer Size
 // To save 386 bytes of PROGMEM (and TX_BUFFER_SIZE+3 bytes of RAM) set to 0.
