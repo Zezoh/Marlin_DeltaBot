@@ -39,9 +39,6 @@
 #define CONFIGURATION_H
 #define CONFIGURATION_H_VERSION 010109
 
-#define FSR_SENSOR
-#define FSR_THRESHOLD_RATIO -1.5
-
 //#define SD_AUTOOPEN_MENU
 
 #define IS_MONO_FAN
@@ -842,6 +839,12 @@
  * The BLTouch probe uses a Hall effect sensor and emulates a servo.
  */
 //#define BLTOUCH
+
+/**
+ * Force Sensing Resistor (FSR) Z probe
+ */
+#define FSR_SENSOR
+#define FSR_THRESHOLD_RATIO -1.5
 
 
 /**

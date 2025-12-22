@@ -1179,10 +1179,11 @@ void MarlinSettings::postprocess() {
         EEPROM_READ(zprobe_zoffset);
 
       //
-      // FSR Sensor for  Bed 
+      // FSR Sensor for  Bed
       //
-	  #if ENABLED(FSR_SENSOR)
+      #if ENABLED(FSR_SENSOR)
         EEPROM_READ(thermalManager.fsr_threshold_ratio);
+        thermalManager.set_fsr_threshold_ratio(thermalManager.fsr_threshold_ratio);
       #endif
 
       //
@@ -1895,7 +1896,7 @@ void MarlinSettings::reset() {
   #endif
 
   #if ENABLED(FSR_SENSOR)
-    thermalManager.fsr_threshold_ratio = FSR_THRESHOLD_RATIO;
+    thermalManager.set_fsr_threshold_ratio(FSR_THRESHOLD_RATIO);
   #endif
 
   #if ENABLED(DELTA)

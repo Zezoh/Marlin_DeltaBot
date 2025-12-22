@@ -2595,8 +2595,8 @@ void clean_up_after_endstop_or_probe_move() {
       probing_pause(true);
     #endif
 	
-	#if ENABLED(FSR_SENSOR)
-      thermalManager.resetThreshold();
+    #if ENABLED(FSR_SENSOR)
+      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
     #endif
 
     // Move down until probe triggered
@@ -2620,8 +2620,8 @@ void clean_up_after_endstop_or_probe_move() {
       if (probe_triggered && set_bltouch_deployed(false)) return true;
     #endif
 	
-	#if ENABLED(FSR_SENSOR)
-      thermalManager.resetThreshold();
+    #if ENABLED(FSR_SENSOR)
+      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
     #endif
 	
     endstops.hit_on_purpose();
@@ -2651,17 +2651,19 @@ void clean_up_after_endstop_or_probe_move() {
       if (DEBUGGING(LEVELING)) DEBUG_POS(">>> run_z_probe", current_position);
     #endif
 
+    #if ENABLED(FSR_SENSOR)
+      struct FsrProbeGuard {
+        FsrProbeGuard() { thermalManager.enable_fsr_probe(); }
+        ~FsrProbeGuard() { thermalManager.disable_fsr_probe(); }
+      } fsr_guard;
+    #endif
+
     // Stop the probe before it goes too low to prevent damage.
     // If Z isn't known then probe to -10mm.
     const float z_probe_low_point = TEST(axis_known_position, Z_AXIS) ? -zprobe_zoffset + Z_PROBE_LOW_POINT : -10.0;
 
     // Double-probing does a fast probe followed by a slow probe
     #if MULTIPLE_PROBING == 2
-
-	// Simulate probe deploy
-	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = true;
-    #endif
 
       // Do a first probe at the fast speed
       if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_FAST))) {
@@ -2694,91 +2696,69 @@ void clean_up_after_endstop_or_probe_move() {
         // If we don't make it to the z position (i.e. the probe triggered), move up to make clearance for the probe
         if (!do_probe_move(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST)))
           do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_BETWEEN_PROBES, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
-	  // Temp fix to auto activate fsr before reach to bed 
-	  	// #if ENABLED(FSR_SENSOR)
-          // thermalManager.resetThreshold();
-        // #endif
       }
     #endif
 	
-	#if MULTIPLE_PROBING == 3
+    #if MULTIPLE_PROBING == 3
 
-	// simulate probe deploy
-	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = true;
+      bool all_points_are_good = false;
+      float z_tolerance = 0.03;
+      float z_read[3] = {67.0};
+      float z_avg = 0.0;
+      int adjust_fsr_threshold = 0;
+
+      do {
+
+        if (adjust_fsr_threshold > 5) {
+          const float requested_ratio = thermalManager.fsr_threshold_ratio - 0.15f;
+          const bool clamped = !thermalManager.set_fsr_threshold_ratio(requested_ratio);
+          if (clamped) thermalManager.resetThreshold();
+          SERIAL_ECHOPGM("New fsr threshold: ");
+          SERIAL_ECHOLN(thermalManager.fsr_threshold_ratio);
+          adjust_fsr_threshold = 0;
+        }
+
+        // move down slowly to find bed
+        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+          #if ENABLED(DEBUG_LEVELING_FEATURE)
+            if (DEBUGGING(LEVELING)) {
+              SERIAL_ECHOLNPGM("SLOW Probe fail!");
+              DEBUG_POS("<<< run_z_probe", current_position);
+            }
+          #endif
+          return NAN;
+        }
+
+        z_read[2] = z_read[1];
+        z_read[1] = z_read[0];
+        z_read[0] = current_position[Z_AXIS];
+
+        do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_SLOW*2));
+
+        adjust_fsr_threshold += 1;
+        z_avg = (z_read[0] + z_read[1] + z_read[2]) / 3.0;
+
+        if (destination[Z_AXIS] > 66.90) {
+          int i = 10;
+          do {
+            idle();
+            delay(50);
+          } while (--i);
+          all_points_are_good = false;
+        } else {
+          // Check for all points
+          all_points_are_good =
+            abs(z_read[0] - z_avg) < z_tolerance &&
+            abs(z_read[1] - z_avg) < z_tolerance &&
+            abs(z_read[2] - z_avg) < z_tolerance;
+        }
+      } while (!all_points_are_good);
+
+      adjust_fsr_threshold = 0;
     #endif
-
-		bool all_points_are_good = false;
-		float z_tolerance = 0.03;
-		float z_read[3] = {67.0};
-		// float z_read[3] = {0.0};
-		float z_avg = 0.0;
-		int adjust_fsr_threshold = 0;
-        // float old_fsr_threshold = thermalManager.fsr_threshold_ratio;		
-
-		do {
-		   
-		  if (adjust_fsr_threshold > 5) {
-		    if (thermalManager.fsr_threshold_ratio > -4.0) {
-			  thermalManager.fsr_threshold_ratio -= 0.15;
-		    } else {
-			  //thermalManager.fsr_threshold_ratio -= 0.10;
-              thermalManager.resetThreshold();
-		    }
-		    SERIAL_ECHOPGM("New fsr threshold: ");
-		    SERIAL_ECHOLN(thermalManager.fsr_threshold_ratio);
-		    adjust_fsr_threshold = 0;
-		  }
-		   
-		  // move down slowly to find bed
-		  if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
-			#if ENABLED(DEBUG_LEVELING_FEATURE)
-			if (DEBUGGING(LEVELING)) {
-			  SERIAL_ECHOLNPGM("SLOW Probe fail!");
-			  DEBUG_POS("<<< run_z_probe", current_position);
-			}
-			#endif
-			return NAN;
-		  }
-
-		  z_read[2] = z_read[1];
-		  z_read[1] = z_read[0];
-		  z_read[0] = current_position[Z_AXIS];
-
-		  do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_SLOW*2));
-		  
-		  adjust_fsr_threshold += 1;
-		  // SERIAL_ECHOPGM("Fsr Counter: ");
-          // SERIAL_ECHOLN(adjust_fsr_threshold);
-		  z_avg = (z_read[0] + z_read[1] + z_read[2]) / 3.0;
-		  
-		  if (destination[Z_AXIS] > 66.90) {
-			int i = 10;
-			do {
-			  idle();
-			  delay(50);
-			} while (--i);
-			all_points_are_good = false;
-		  } else {
-			// Check for all points
-			all_points_are_good =
-			  abs(z_read[0] - z_avg) < z_tolerance &&
-			  abs(z_read[1] - z_avg) < z_tolerance &&
-			  abs(z_read[2] - z_avg) < z_tolerance;
-		  }
-		} while (!all_points_are_good);
-		
-		  adjust_fsr_threshold = 0; 
-		  // if (old_fsr_threshold != thermalManager.fsr_threshold_ratio) settings.save();
-		#endif
 
     #if MULTIPLE_PROBING > 3
-	
-		// Simulate probe deploy
-	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = true;
-    #endif
-	
+
       float probes_total = 0;
       for (uint8_t p = MULTIPLE_PROBING + 1; --p;) {
     #endif
@@ -2833,11 +2813,6 @@ void clean_up_after_endstop_or_probe_move() {
 
     #if ENABLED(DEBUG_LEVELING_FEATURE)
       if (DEBUGGING(LEVELING)) DEBUG_POS("<<< run_z_probe", current_position);
-    #endif
-    
-	// simulate probe stow
-	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = false;
     #endif
 
     return measured_z;
@@ -11462,9 +11437,29 @@ inline void gcode_M502() {
 
 #if ENABLED(FSR_SENSOR)
   inline void gcode_M853() {
-	if (parser.seen('V')) thermalManager.fsr_threshold_ratio = parser.value_float();
-	  SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
-	  SERIAL_EOL();
+    const bool has_value = parser.seen('V');
+    if (has_value) {
+      const float requested_ratio = parser.value_float();
+      const bool in_range = thermalManager.set_fsr_threshold_ratio(requested_ratio);
+      SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
+      if (!in_range) {
+        SERIAL_ECHOPGM(" (clamped to ");
+        SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MIN, 2);
+        SERIAL_ECHOPGM("..");
+        SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MAX, 2);
+        SERIAL_CHAR(')');
+      }
+      SERIAL_EOL();
+    }
+    else {
+      SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
+      SERIAL_ECHOPGM(" (range ");
+      SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MIN, 2);
+      SERIAL_ECHOPGM("..");
+      SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MAX, 2);
+      SERIAL_CHAR(')');
+      SERIAL_EOL();
+    }
   }
 #endif
 

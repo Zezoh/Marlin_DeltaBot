@@ -374,19 +374,26 @@ class Temperature {
     #endif
 
     #if ENABLED(FSR_SENSOR)
+      static constexpr float FSR_THRESHOLD_MIN = -10.0f;
+      static constexpr float FSR_THRESHOLD_MAX = -0.05f;
+
       static int16_t current_fsr;
-	    static float fsr_previous;
-	    static float fsr_bias;
-	    static float fsr_bias_probe;
-	    static float fsr_threshold_ratio;
+      static float fsr_previous;
+      static float fsr_bias;
+      static float fsr_bias_probe;
+      static float fsr_threshold_ratio;
       static bool fsr_activation;
 
+      static bool set_fsr_threshold_ratio(const float ratio);
+      FORCE_INLINE static bool fsrEnabled() { return fsr_activation; }
+      FORCE_INLINE static void enable_fsr_probe() { fsr_activation = true; resetThreshold(); }
+      FORCE_INLINE static void disable_fsr_probe() { fsr_activation = false; }
       FORCE_INLINE static bool fsrTriggered() {
         bool fsr_triggered = (fsr_bias_probe < fsr_threshold_ratio);
         return fsr_triggered;
       }
       FORCE_INLINE static void resetThreshold() {
-		    fsr_previous = current_fsr;
+        fsr_previous = current_fsr;
         fsr_bias = 0.0;
         fsr_bias_probe = 0.0;
       }
