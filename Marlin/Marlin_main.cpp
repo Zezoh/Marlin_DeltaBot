@@ -15370,23 +15370,33 @@ void manage_one_led() {
 
 static millis_t duration_in_millis = 1000;
 
-static bool buttonActive = false;     // indicates if the button is active/pressed
-static bool longPressActive = false;  // indicate if the button has been long-pressed
-static bool longPress = false;
-static bool shortPress = false;
-static bool doubleClick = false;
+  static bool buttonActive = false;     // indicates if the button is active/pressed
+  static bool longPressActive = false;  // indicate if the button has been long-pressed
+  static bool longPress = false;
+  static bool shortPress = false;
+  static bool shortPressPending = false;
+  static bool doubleClick = false;
 
-static millis_t buttonTimer = 0;
-static millis_t pressDuration = 0;          // stores the duration (in milliseconds) that the button was pressed/held down for
-static millis_t debounceThreshold = 50;      // the threshold (in milliseconds) for a button press to be confirmed (i.e. not "noise")
-static millis_t lastPressTime = 0;           // stores the time of the last button press
-static millis_t doubleClickThreshold = 500;  // the threshold (in milliseconds) for detecting a double click
+  static millis_t buttonTimer = 0;
+  static millis_t pressDuration = 0;          // stores the duration (in milliseconds) that the button was pressed/held down for
+  static millis_t debounceThreshold = 50;      // the threshold (in milliseconds) for a button press to be confirmed (i.e. not "noise")
+  static millis_t lastPressTime = 0;           // stores the time of the last button press
+  static millis_t doubleClickThreshold = 500;  // the threshold (in milliseconds) for detecting a double click
+  static millis_t shortPressConfirm_ms = 0;    // earliest time a pending short press should execute
 
-void manage_one_button_status() {
-  if (printer_states.activity_state == ACTIVITY_STARTUP_CALIBRATION) return;
+  inline void finalize_short_press_if_ready() {
+    const millis_t now = millis();
+    if (shortPressPending && ELAPSED(now, shortPressConfirm_ms)) {
+      shortPress = true;
+      shortPressPending = false;
+    }
+  }
 
-  const bool pressed = ONE_BUTTON_PRESSED;
-  const millis_t now = millis();
+  void manage_one_button_status() {
+    if (printer_states.activity_state == ACTIVITY_STARTUP_CALIBRATION) return;
+
+    const bool pressed = ONE_BUTTON_PRESSED;
+    const millis_t now = millis();
 
   // Detect a new press and capture start time
   if (pressed && !buttonActive) {
@@ -15410,17 +15420,21 @@ void manage_one_button_status() {
     pressDuration = now - buttonTimer;
     buttonActive = false;
 
-    if (longPressActive) {
-      longPressActive = false;
-    } else if (pressDuration > debounceThreshold) {
-      if (now - lastPressTime <= doubleClickThreshold)
-        doubleClick = true;
-      else
-        shortPress = true;
-      lastPressTime = now;
+      if (longPressActive) {
+        longPressActive = false;
+      } else if (pressDuration > debounceThreshold) {
+        if (now - lastPressTime <= doubleClickThreshold) {
+          doubleClick = true;
+          shortPressPending = false;
+        }
+        else {
+          shortPressPending = true;
+          shortPressConfirm_ms = now + doubleClickThreshold;
+        }
+        lastPressTime = now;
+      }
     }
   }
-}
 
 #if ENABLED(ONE_BUTTON_ROTARY)
 
@@ -15481,12 +15495,13 @@ void manage_one_button_status() {
 
 #endif
 
-inline void adjust_zprobe_offset() {
-  if (wait_for_click && shortPress) { // once click to clear and reset values
-    wait_for_click = false;
-    #if ENABLED(ONE_BUTTON_ROTARY)
-      live_z = false;
-      rotary_babystep_active = false;
+  inline void adjust_zprobe_offset() {
+    finalize_short_press_if_ready();
+    if (wait_for_click && shortPress) { // once click to clear and reset values
+      wait_for_click = false;
+      #if ENABLED(ONE_BUTTON_ROTARY)
+        live_z = false;
+        rotary_babystep_active = false;
     #endif
     shortPress = false;
   }
@@ -15540,12 +15555,13 @@ inline void manage_one_button_actions() {
       const float z = current_position[Z_AXIS] + counter;
       line_to_z(constrain(z, -Z_OFFSET_CLEARANCE, Z_OFFSET_CLEARANCE));
     }
-    counter = 0;
-  #endif
+      counter = 0;
+    #endif
 
-  if (shortPress) {
-    shortPress = false;
-    delay(100);
+    finalize_short_press_if_ready();
+    if (shortPress) {
+      shortPress = false;
+      delay(100);
 
     if (printer_states.activity_state != ACTIVITY_CHANGING_FILAMENT) {
       if (printer_states.activity_state != ACTIVITY_STARTUP_CALIBRATION) {
