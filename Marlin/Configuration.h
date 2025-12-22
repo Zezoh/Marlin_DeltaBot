@@ -540,15 +540,16 @@
   // This is a trade-off between visible corners (not enough segments)
   // and processor overload (too many expensive sqrt calls).
   #define DELTA_SEGMENTS_PER_SECOND 80
-  #define KINEMATIC_SEGMENT_MIN_LENGTH 0.25 // mm. Limit segment granularity to reduce planner load.
-  
+
+  // Limit segment granularity to reduce planner load.
+  #define KINEMATIC_SEGMENT_MIN_LENGTH 0.25 // mm
 
   //Fast inverse sqrt from Quake III Arena                                                
   //See: https://en.wikipedia.org/wiki/Fast_inverse_square_root                                                                                                               
   #define DELTA_FAST_SQRT
 
   // Convert feedrates to apply to the Effector instead of the Carriages
-  #define DELTA_FEEDRATE_SCALING
+  //#define DELTA_FEEDRATE_SCALING
 
   // After homing move down to a height where XY movement is unconstrained
   //#define DELTA_HOME_TO_SAFE_ZONE
@@ -1022,7 +1023,7 @@
 // @section extruder
 
 // For direct drive extruder v9 set to true, for geared extruder set to false.
-#define INVERT_E0_DIR true
+#define INVERT_E0_DIR false
 #define INVERT_E1_DIR false
 #define INVERT_E2_DIR false
 #define INVERT_E3_DIR false
