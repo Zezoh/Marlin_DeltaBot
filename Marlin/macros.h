@@ -23,6 +23,8 @@
 #ifndef MACROS_H
 #define MACROS_H
 
+#include <stdint.h>
+
 #define XYZ   3
 #define XYZE  4
 #define ABC   3
@@ -230,9 +232,20 @@
 #define POW(x, y)   powf(x, y)
 
 #if ENABLED(DELTA_FAST_SQRT)
- #define SQRT(x) (1.0f / Q_rsqrt(x))
+  FORCE_INLINE float Q_rsqrt(const float number) {
+    if (number <= 0.0f) return 0.0f;
+
+    const float x2 = number * 0.5f;
+    union { float f; int32_t i; } conv = { number };
+    conv.i = 0x5F3759DF - (conv.i >> 1);
+    conv.f *= 1.5f - (x2 * conv.f * conv.f);
+    return conv.f;
+  }
+
+  FORCE_INLINE float _SQRT(const float x) { return x <= 0.0f ? 0.0f : 1.0f / Q_rsqrt(x); }
+  #define SQRT(x) _SQRT(x)
 #else
- #define SQRT(x) sqrtf(x)
+  #define SQRT(x) sqrtf(x)
 #endif
 
 #define EXP(x)      exp(x)
