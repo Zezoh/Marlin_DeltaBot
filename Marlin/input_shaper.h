@@ -1,4 +1,5 @@
-#pragma once
+#ifndef INPUT_SHAPER_H
+#define INPUT_SHAPER_H
 
 #include "macros.h"
 
@@ -37,3 +38,5 @@
   };
 
 #endif
+
+#endif // INPUT_SHAPER_H
