@@ -303,6 +303,7 @@ class Stepper {
 
     static uint32_t nextMainISR;   // time remaining for the next Step ISR
     #if ENABLED(DELTA_INPUT_SHAPER)
+      static uint32_t input_shaper_step_rate(const uint32_t elapsed_ticks, const int8_t accel_sign);
       static InputShaperFIR tower_shaper[3];
       static int32_t tower_ratio_q15[3];
       static int64_t tower_ratio_denom_q30;

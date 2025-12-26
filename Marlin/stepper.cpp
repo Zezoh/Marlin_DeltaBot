@@ -1482,44 +1482,44 @@ void Stepper::stepper_pulse_phase_isr() {
    * resonance frequency. The projection preserves geometric correctness by
    * keeping the axis ratios constant for Bresenham stepping.
    */
-  FORCE_INLINE uint32_t input_shaper_step_rate(const uint32_t elapsed_ticks, const int8_t accel_sign) {
-    if (!Stepper::current_block || Stepper::tower_ratio_denom_q30 == 0)
-      return Stepper::current_block ? Stepper::current_block->initial_rate : 0;
+  uint32_t Stepper::input_shaper_step_rate(const uint32_t elapsed_ticks, const int8_t accel_sign) {
+    if (!current_block || tower_ratio_denom_q30 == 0)
+      return current_block ? current_block->initial_rate : 0;
 
-    Stepper::shaper_tick_accum += elapsed_ticks;
+    shaper_tick_accum += elapsed_ticks;
 
-    while (Stepper::shaper_tick_accum >= Stepper::shaper_tick_interval) {
-      Stepper::shaper_tick_accum -= Stepper::shaper_tick_interval;
+    while (shaper_tick_accum >= shaper_tick_interval) {
+      shaper_tick_accum -= shaper_tick_interval;
 
       int64_t dot = 0;
-      const int32_t accel_mag = (int32_t)Stepper::current_block->acceleration_steps_per_s2;
+      const int32_t accel_mag = (int32_t)current_block->acceleration_steps_per_s2;
 
       for (uint8_t i = 0; i < 3; ++i) {
-        const int32_t accel_axis = (int32_t)(((int64_t)accel_mag * Stepper::tower_ratio_q15[i]) >> 15);
+        const int32_t accel_axis = (int32_t)(((int64_t)accel_mag * tower_ratio_q15[i]) >> 15);
         const int32_t command = accel_sign ? accel_axis * accel_sign : 0;
-        const int32_t shaped = Stepper::tower_shaper[i].process(command);
-        dot += (int64_t)shaped * Stepper::tower_ratio_q15[i];
+        const int32_t shaped = tower_shaper[i].process(command);
+        dot += (int64_t)shaped * tower_ratio_q15[i];
       }
 
       int32_t accel_scalar = 0;
-      if (Stepper::tower_ratio_denom_q30 > 0)
-        accel_scalar = (int32_t)((dot << 15) / Stepper::tower_ratio_denom_q30);
+      if (tower_ratio_denom_q30 > 0)
+        accel_scalar = (int32_t)((dot << 15) / tower_ratio_denom_q30);
 
       NOMORE(accel_scalar, accel_mag);
       NOLESS(accel_scalar, -accel_mag);
 
-      Stepper::shaper_step_rate += (int32_t)(((int64_t)accel_scalar * Stepper::shaper_tick_us) / 1000000L);
+      shaper_step_rate += (int32_t)(((int64_t)accel_scalar * shaper_tick_us) / 1000000L);
 
-      if (Stepper::shaper_step_rate < 0) Stepper::shaper_step_rate = 0;
-      NOMORE(Stepper::shaper_step_rate, (int32_t)Stepper::current_block->nominal_rate);
+      if (shaper_step_rate < 0) shaper_step_rate = 0;
+      NOMORE(shaper_step_rate, (int32_t)current_block->nominal_rate);
 
       if (accel_sign < 0)
-        NOLESS(Stepper::shaper_step_rate, (int32_t)Stepper::current_block->final_rate);
+        NOLESS(shaper_step_rate, (int32_t)current_block->final_rate);
       else if (accel_sign > 0)
-        NOLESS(Stepper::shaper_step_rate, (int32_t)Stepper::current_block->initial_rate);
+        NOLESS(shaper_step_rate, (int32_t)current_block->initial_rate);
     }
 
-    return (uint32_t)Stepper::shaper_step_rate;
+    return (uint32_t)shaper_step_rate;
   }
 #endif
 
