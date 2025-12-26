@@ -173,6 +173,9 @@ uint32_t Stepper::nextMainISR = 0;
   uint32_t Stepper::shaper_tick_us = 0;
   int32_t Stepper::shaper_step_rate = 0;
   uint32_t Stepper::shaper_last_interval = 0;
+  float Stepper::shaper_freq_hz[3] = { 0, 0, 0 };
+  float Stepper::shaper_damping = 0.0f;
+  uint16_t Stepper::shaper_hz = 0;
 #endif
 
 #if ENABLED(LIN_ADVANCE)
@@ -2034,6 +2037,44 @@ bool Stepper::is_block_busy(const block_t* const block) {
   return block == vnew;
 }
 
+#if ENABLED(DELTA_INPUT_SHAPER)
+  void Stepper::set_input_shaper(const float freq_a, const float freq_b, const float freq_c, const float damping, const uint16_t sample_hz) {
+    shaper_hz = sample_hz;
+    shaper_damping = damping;
+    shaper_freq_hz[0] = freq_a;
+    shaper_freq_hz[1] = freq_b;
+    shaper_freq_hz[2] = freq_c;
+
+    shaper_tick_interval = STEPPER_TIMER_RATE / shaper_hz;
+    if (shaper_tick_interval < 1) shaper_tick_interval = 1;
+    shaper_tick_us = 1000000UL / shaper_hz;
+    if (shaper_tick_us < 1) shaper_tick_us = 1;
+    shaper_last_interval = shaper_tick_interval;
+
+    // Each tower gets its own resonance frequency to safely handle asymmetric dynamics.
+    tower_shaper[0].configure_zvd(shaper_freq_hz[0], shaper_damping, shaper_hz);
+    tower_shaper[1].configure_zvd(shaper_freq_hz[1], shaper_damping, shaper_hz);
+    tower_shaper[2].configure_zvd(shaper_freq_hz[2], shaper_damping, shaper_hz);
+  }
+
+  void Stepper::report_input_shaper() {
+    SERIAL_ECHOPGM("Input Shaper: ");
+    SERIAL_ECHOPAIR("A", shaper_freq_hz[0]);
+    SERIAL_ECHOPAIR(" B", shaper_freq_hz[1]);
+    SERIAL_ECHOPAIR(" C", shaper_freq_hz[2]);
+    SERIAL_ECHOPAIR(" D", shaper_damping);
+    SERIAL_ECHOLNPAIR(" H", shaper_hz);
+  }
+
+  void Stepper::get_input_shaper(float &freq_a, float &freq_b, float &freq_c, float &damping, uint16_t &sample_hz) {
+    freq_a = shaper_freq_hz[0];
+    freq_b = shaper_freq_hz[1];
+    freq_c = shaper_freq_hz[2];
+    damping = shaper_damping;
+    sample_hz = shaper_hz;
+  }
+#endif
+
 void Stepper::init() {
 
   // Init Digipot Motor Current
@@ -2047,16 +2088,7 @@ void Stepper::init() {
   #endif
 
   #if ENABLED(DELTA_INPUT_SHAPER)
-    shaper_tick_interval = STEPPER_TIMER_RATE / INPUT_SHAPER_HZ;
-    if (shaper_tick_interval < 1) shaper_tick_interval = 1;
-    shaper_tick_us = 1000000UL / INPUT_SHAPER_HZ;
-    if (shaper_tick_us < 1) shaper_tick_us = 1;
-    shaper_last_interval = shaper_tick_interval;
-
-    // Each tower gets its own resonance frequency to safely handle asymmetric dynamics.
-    tower_shaper[0].configure_zvd(INPUT_SHAPER_FREQ_A, INPUT_SHAPER_DAMPING, INPUT_SHAPER_HZ);
-    tower_shaper[1].configure_zvd(INPUT_SHAPER_FREQ_B, INPUT_SHAPER_DAMPING, INPUT_SHAPER_HZ);
-    tower_shaper[2].configure_zvd(INPUT_SHAPER_FREQ_C, INPUT_SHAPER_DAMPING, INPUT_SHAPER_HZ);
+    set_input_shaper(INPUT_SHAPER_FREQ_A, INPUT_SHAPER_FREQ_B, INPUT_SHAPER_FREQ_C, INPUT_SHAPER_DAMPING, INPUT_SHAPER_HZ);
   #endif
 
   // Init Dir Pins

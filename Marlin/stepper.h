@@ -311,6 +311,9 @@ class Stepper {
       static uint32_t shaper_tick_us;
       static int32_t shaper_step_rate;
       static uint32_t shaper_last_interval;
+      static float shaper_freq_hz[3];
+      static float shaper_damping;
+      static uint16_t shaper_hz;
     #endif
     #if ENABLED(LIN_ADVANCE)
       static uint32_t nextAdvanceISR, LA_isr_rate;
@@ -356,6 +359,12 @@ class Stepper {
 
     // The stepper block processing phase ISR
     static uint32_t stepper_block_phase_isr();
+
+    #if ENABLED(DELTA_INPUT_SHAPER)
+      static void set_input_shaper(const float freq_a, const float freq_b, const float freq_c, const float damping, const uint16_t sample_hz);
+      static void get_input_shaper(float &freq_a, float &freq_b, float &freq_c, float &damping, uint16_t &sample_hz);
+      static void report_input_shaper();
+    #endif
 
     #if ENABLED(LIN_ADVANCE)
       // The Linear advance stepper ISR

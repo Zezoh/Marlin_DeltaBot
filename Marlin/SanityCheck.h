@@ -309,6 +309,24 @@
   #error "MAX7219_DEBUG_STEPPER_QUEUE is now MAX7219_DEBUG_PLANNER_QUEUE. Please update your configuration."
 #endif
 
+/**
+ * Delta input shaping sanity checks
+ */
+#if ENABLED(DELTA_INPUT_SHAPER)
+  #if DISABLED(DELTA)
+    #error "DELTA_INPUT_SHAPER requires DELTA kinematics."
+  #endif
+  #if ENABLED(S_CURVE_ACCELERATION)
+    #error "DELTA_INPUT_SHAPER is incompatible with S_CURVE_ACCELERATION."
+  #endif
+  #if INPUT_SHAPER_HZ < 1
+    #error "INPUT_SHAPER_HZ must be 1 or higher."
+  #endif
+  #if INPUT_SHAPER_MAX_DELAY_SAMPLES < 1
+    #error "INPUT_SHAPER_MAX_DELAY_SAMPLES must be 1 or higher."
+  #endif
+#endif
+
 #define BOARD_MKS_13     -47
 #define BOARD_TRIGORILLA -343
 #if MB(MKS_13)
