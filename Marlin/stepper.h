@@ -191,6 +191,7 @@
 //
 
 #include "planner.h"
+#include "input_shaper.h"
 #include "speed_lookuptable.h"
 #include "stepper_indirection.h"
 #include "language.h"
@@ -301,6 +302,16 @@ class Stepper {
     #endif
 
     static uint32_t nextMainISR;   // time remaining for the next Step ISR
+    #if ENABLED(DELTA_INPUT_SHAPER)
+      static InputShaperFIR tower_shaper[3];
+      static int32_t tower_ratio_q15[3];
+      static int64_t tower_ratio_denom_q30;
+      static uint32_t shaper_tick_accum;
+      static uint32_t shaper_tick_interval;
+      static uint32_t shaper_tick_us;
+      static int32_t shaper_step_rate;
+      static uint32_t shaper_last_interval;
+    #endif
     #if ENABLED(LIN_ADVANCE)
       static uint32_t nextAdvanceISR, LA_isr_rate;
       static uint16_t LA_current_adv_steps, LA_final_adv_steps, LA_max_adv_steps; // Copy from current executed block. Needed because current_block is set to NULL "too early".
