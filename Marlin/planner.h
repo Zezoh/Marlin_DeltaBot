@@ -77,9 +77,10 @@ typedef struct {
   // Fields used by the motion planner to manage acceleration
   float nominal_speed_sqr,                  // The nominal speed for this block in (mm/sec)^2
         entry_speed_sqr,                    // Entry speed at previous-current junction in (mm/sec)^2
-        max_entry_speed_sqr,                // Maximum allowable junction entry speed in (mm/sec)^2
         min_entry_speed_sqr,                // Minimum entry speed for this block in (mm/sec)^2
+        max_entry_speed_sqr,                // Maximum allowable junction entry speed in (mm/sec)^2
         millimeters,                        // The total travel of this block in mm
+        steps_per_mm,                       // Steps per mm
         acceleration;                       // acceleration mm/sec^2
 
   union {
@@ -860,9 +861,10 @@ class Planner {
       }
     #endif
 
-    static void calculate_trapezoid_for_block(block_t* const block, const float &entry_factor, const float &exit_factor);
+    static void calculate_trapezoid_for_block(block_t* const block, const float &entry_speed, const float &exit_speed);
 
-    static void reverse_pass_kernel(block_t* const current, const block_t * const next);
+    static bool reverse_pass_kernel(block_t* const current, const block_t * const next);
+    static void forward_pass_kernel(const block_t * const previous, block_t * const current);
 
     static void reverse_pass();
 
