@@ -709,8 +709,8 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
   NOLESS(initial_rate, uint32_t(MINIMAL_STEP_RATE));
   NOLESS(final_rate, uint32_t(MINIMAL_STEP_RATE));
 
-  #if ENABLED(S_CURVE_ACCELERATION)
-    uint32_t cruise_rate = initial_rate;
+  #if ENABLED(S_CURVE_ACCELERATION) || ENABLED(LIN_ADVANCE)
+    uint32_t cruise_rate = block->nominal_rate;
   #endif
 
   const int32_t accel = block->acceleration_steps_per_s2;
@@ -730,15 +730,12 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
     accelerate_steps = MIN(uint32_t(MAX(accelerate_steps_float, 0)), block->step_event_count);
     plateau_steps = 0;
 
-    #if ENABLED(S_CURVE_ACCELERATION)
+    #if ENABLED(S_CURVE_ACCELERATION) || ENABLED(LIN_ADVANCE)
       // We won't reach the cruising rate. Let's calculate the speed we will reach
-      cruise_rate = final_speed(initial_rate, accel, accelerate_steps);
+      const float peak_speed = SQRT(sq(float(initial_rate)) + 2.0f * float(accel) * float(accelerate_steps));
+      cruise_rate = (uint32_t)peak_speed;
     #endif
   }
-  #if ENABLED(S_CURVE_ACCELERATION)
-    else // We have some plateau time, so the cruise rate will be the nominal rate
-      cruise_rate = block->nominal_rate;
-  #endif
 
   #if ENABLED(S_CURVE_ACCELERATION)
     // Jerk controlled speed requires to express speed versus time, NOT steps
@@ -762,6 +759,14 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
     block->cruise_rate = cruise_rate;
   #endif
   block->final_rate = final_rate;
+
+  #if ENABLED(LIN_ADVANCE)
+    if (block->use_advance_lead) {
+      const float comp = block->e_D_ratio * extruder_advance_K * axis_steps_per_mm[E_AXIS];
+      block->max_adv_steps = cruise_rate * comp;
+      block->final_adv_steps = final_rate * comp;
+    }
+  #endif
 }
 
 /*                            PLANNER SPEED DEFINITION
@@ -1069,11 +1074,7 @@ void Planner::recalculate_trapezoids() {
                         nomr = 1.0f / current_nominal_speed;
             calculate_trapezoid_for_block(current, current_entry_speed * nomr, next_entry_speed * nomr);
             #if ENABLED(LIN_ADVANCE)
-              if (current->use_advance_lead) {
-                const float comp = current->e_D_ratio * extruder_advance_K * axis_steps_per_mm[E_AXIS];
-                current->max_adv_steps = current_nominal_speed * comp;
-                current->final_adv_steps = next_entry_speed * comp;
-              }
+              UNUSED(current_nominal_speed);
             #endif
           }
 
@@ -1108,11 +1109,7 @@ void Planner::recalculate_trapezoids() {
                   nomr = 1.0f / next_nominal_speed;
       calculate_trapezoid_for_block(next, next_entry_speed * nomr, float(MINIMUM_PLANNER_SPEED) * nomr);
       #if ENABLED(LIN_ADVANCE)
-        if (next->use_advance_lead) {
-          const float comp = next->e_D_ratio * extruder_advance_K * axis_steps_per_mm[E_AXIS];
-          next->max_adv_steps = next_nominal_speed * comp;
-          next->final_adv_steps = (MINIMUM_PLANNER_SPEED) * comp;
-        }
+        UNUSED(next_nominal_speed);
       #endif
     }
 

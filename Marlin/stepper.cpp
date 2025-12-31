@@ -79,6 +79,7 @@
 
 #include "Marlin.h"
 #include "stepper.h"
+#include "input_shaper.h"
 #include "endstops.h"
 #include "planner.h"
 #include "temperature.h"
@@ -162,6 +163,20 @@ uint32_t Stepper::advance_dividend[NUM_AXIS] = { 0 },
 #endif
 
 uint32_t Stepper::nextMainISR = 0;
+
+#if ENABLED(DELTA_INPUT_SHAPER)
+  InputShaperFIR Stepper::tower_shaper[3];
+  int32_t Stepper::tower_ratio_q15[3];
+  int64_t Stepper::tower_ratio_denom_q30 = 0;
+  uint32_t Stepper::shaper_tick_accum = 0;
+  uint32_t Stepper::shaper_tick_interval = 0;
+  uint32_t Stepper::shaper_tick_us = 0;
+  int32_t Stepper::shaper_step_rate = 0;
+  uint32_t Stepper::shaper_last_interval = 0;
+  float Stepper::shaper_freq_hz[3] = { 0, 0, 0 };
+  float Stepper::shaper_damping = 0.0f;
+  uint16_t Stepper::shaper_hz = 0;
+#endif
 
 #if ENABLED(LIN_ADVANCE)
 
@@ -1458,6 +1473,56 @@ void Stepper::stepper_pulse_phase_isr() {
   } while (events_to_do);
 }
 
+#if ENABLED(DELTA_INPUT_SHAPER) && DISABLED(S_CURVE_ACCELERATION)
+  /**
+   * Update the per-tower input shapers at a fixed rate and return a shaped
+   * scalar step rate (steps/s) projected back onto the tower ratio vector.
+   *
+   * Shaping is performed in tower space (A/B/C) so each tower can have its own
+   * resonance frequency. The projection preserves geometric correctness by
+   * keeping the axis ratios constant for Bresenham stepping.
+   */
+  uint32_t Stepper::input_shaper_step_rate(const uint32_t elapsed_ticks, const int8_t accel_sign) {
+    if (!current_block || tower_ratio_denom_q30 == 0)
+      return current_block ? current_block->initial_rate : 0;
+
+    shaper_tick_accum += elapsed_ticks;
+
+    while (shaper_tick_accum >= shaper_tick_interval) {
+      shaper_tick_accum -= shaper_tick_interval;
+
+      int64_t dot = 0;
+      const int32_t accel_mag = (int32_t)current_block->acceleration_steps_per_s2;
+
+      for (uint8_t i = 0; i < 3; ++i) {
+        const int32_t accel_axis = (int32_t)(((int64_t)accel_mag * tower_ratio_q15[i]) >> 15);
+        const int32_t command = accel_sign ? accel_axis * accel_sign : 0;
+        const int32_t shaped = tower_shaper[i].process(command);
+        dot += (int64_t)shaped * tower_ratio_q15[i];
+      }
+
+      int32_t accel_scalar = 0;
+      if (tower_ratio_denom_q30 > 0)
+        accel_scalar = (int32_t)((dot << 15) / tower_ratio_denom_q30);
+
+      NOMORE(accel_scalar, accel_mag);
+      NOLESS(accel_scalar, -accel_mag);
+
+      shaper_step_rate += (int32_t)(((int64_t)accel_scalar * shaper_tick_us) / 1000000L);
+
+      if (shaper_step_rate < 0) shaper_step_rate = 0;
+      NOMORE(shaper_step_rate, (int32_t)current_block->nominal_rate);
+
+      if (accel_sign < 0)
+        NOLESS(shaper_step_rate, (int32_t)current_block->final_rate);
+      else if (accel_sign > 0)
+        NOLESS(shaper_step_rate, (int32_t)current_block->initial_rate);
+    }
+
+    return (uint32_t)shaper_step_rate;
+  }
+#endif
+
 // This is the last half of the stepper interrupt: This one processes and
 // properly schedules blocks from the planner. This is executed after creating
 // the step pulses, so it is not time critical, as pulses are already done.
@@ -1489,8 +1554,12 @@ uint32_t Stepper::stepper_block_phase_isr() {
               ? _eval_bezier_curve(acceleration_time)
               : current_block->cruise_rate;
         #else
-          acc_step_rate = STEP_MULTIPLY(acceleration_time, current_block->acceleration_rate) + current_block->initial_rate;
-          NOMORE(acc_step_rate, current_block->nominal_rate);
+          #if ENABLED(DELTA_INPUT_SHAPER)
+            acc_step_rate = input_shaper_step_rate(shaper_last_interval, 1);
+          #else
+            acc_step_rate = STEP_MULTIPLY(acceleration_time, current_block->acceleration_rate) + current_block->initial_rate;
+            NOMORE(acc_step_rate, current_block->nominal_rate);
+          #endif
         #endif
 
         // acc_step_rate is in steps/second
@@ -1527,15 +1596,18 @@ uint32_t Stepper::stepper_block_phase_isr() {
               : current_block->final_rate;
           }
         #else
-
-          // Using the old trapezoidal control
-          step_rate = STEP_MULTIPLY(deceleration_time, current_block->acceleration_rate);
-          if (step_rate < acc_step_rate) { // Still decelerating?
-            step_rate = acc_step_rate - step_rate;
-            NOLESS(step_rate, current_block->final_rate);
-          }
-          else
-            step_rate = current_block->final_rate;
+          #if ENABLED(DELTA_INPUT_SHAPER)
+            step_rate = input_shaper_step_rate(shaper_last_interval, -1);
+          #else
+            // Using the old trapezoidal control
+            step_rate = STEP_MULTIPLY(deceleration_time, current_block->acceleration_rate);
+            if (step_rate < acc_step_rate) { // Still decelerating?
+              step_rate = acc_step_rate - step_rate;
+              NOLESS(step_rate, current_block->final_rate);
+            }
+            else
+              step_rate = current_block->final_rate;
+          #endif
         #endif
 
         // step_rate is in steps/second
@@ -1563,14 +1635,19 @@ uint32_t Stepper::stepper_block_phase_isr() {
           if (LA_steps && LA_isr_rate != current_block->advance_speed) nextAdvanceISR = 0;
         #endif
 
-        // Calculate the ticks_nominal for this nominal speed, if not done yet
-        if (ticks_nominal < 0) {
-          // step_rate to timer interval and loops for the nominal speed
-          ticks_nominal = calc_timer_interval(current_block->nominal_rate, oversampling_factor, &steps_per_isr);
-        }
+        #if ENABLED(DELTA_INPUT_SHAPER) && DISABLED(S_CURVE_ACCELERATION)
+          const uint32_t step_rate = input_shaper_step_rate(shaper_last_interval, 0);
+          interval = calc_timer_interval(step_rate, oversampling_factor, &steps_per_isr);
+        #else
+          // Calculate the ticks_nominal for this nominal speed, if not done yet
+          if (ticks_nominal < 0) {
+            // step_rate to timer interval and loops for the nominal speed
+            ticks_nominal = calc_timer_interval(current_block->nominal_rate, oversampling_factor, &steps_per_isr);
+          }
 
-        // The timer interval is just the nominal value for the nominal speed
-        interval = ticks_nominal;
+          // The timer interval is just the nominal value for the nominal speed
+          interval = ticks_nominal;
+        #endif
       }
     }
   }
@@ -1594,8 +1671,12 @@ uint32_t Stepper::stepper_block_phase_isr() {
         planner.discard_current_block();
 
         // Try to get a new block
-        if (!(current_block = planner.get_current_block()))
+        if (!(current_block = planner.get_current_block())) {
+          #if ENABLED(DELTA_INPUT_SHAPER)
+            shaper_last_interval = interval;
+          #endif
           return interval; // No more queued movements!
+        }
       }
 
       // Flag all moving axes for proper endstop handling
@@ -1688,6 +1769,37 @@ uint32_t Stepper::stepper_block_phase_isr() {
 
       // Based on the oversampling factor, do the calculations
       step_event_count = current_block->step_event_count << oversampling;
+
+      #if ENABLED(DELTA_INPUT_SHAPER)
+        /**
+         * Precompute tower ratios (A/B/C) in Q1.15 for per-tower shaping.
+         * Shaping happens in tower (motor) space after delta kinematics, so the
+         * shapers work on A/B/C acceleration commands rather than Cartesian XYZ.
+         *
+         * Acceleration (not position) is filtered so that the FIR is causal,
+         * velocity integration remains monotonic, and Z stays geometrically
+         * correct for delta motion.
+         *
+         * Ratios are based on the un-oversampled step_event_count to preserve
+         * geometric correctness while shaping acceleration in tower space.
+         */
+        if (current_block->step_event_count) {
+          tower_ratio_q15[0] = (int32_t)(((int64_t)current_block->steps[A_AXIS] << 15) / current_block->step_event_count);
+          tower_ratio_q15[1] = (int32_t)(((int64_t)current_block->steps[B_AXIS] << 15) / current_block->step_event_count);
+          tower_ratio_q15[2] = (int32_t)(((int64_t)current_block->steps[C_AXIS] << 15) / current_block->step_event_count);
+        }
+        else {
+          tower_ratio_q15[0] = tower_ratio_q15[1] = tower_ratio_q15[2] = 0;
+        }
+
+        tower_ratio_denom_q30 = 0;
+        for (uint8_t i = 0; i < 3; ++i)
+          tower_ratio_denom_q30 += (int64_t)tower_ratio_q15[i] * tower_ratio_q15[i];
+
+        shaper_step_rate = current_block->initial_rate;
+        shaper_tick_accum = 0;
+        shaper_last_interval = shaper_tick_interval;
+      #endif
 
       // Initialize Bresenham delta errors to 1/2
       #if ENABLED(HANGPRINTER)
@@ -1801,6 +1913,9 @@ uint32_t Stepper::stepper_block_phase_isr() {
     }
   }
 
+  #if ENABLED(DELTA_INPUT_SHAPER)
+    shaper_last_interval = interval;
+  #endif
   // Return the interval to wait
   return interval;
 }
@@ -1922,6 +2037,44 @@ bool Stepper::is_block_busy(const block_t* const block) {
   return block == vnew;
 }
 
+#if ENABLED(DELTA_INPUT_SHAPER)
+  void Stepper::set_input_shaper(const float freq_a, const float freq_b, const float freq_c, const float damping, const uint16_t sample_hz) {
+    shaper_hz = sample_hz ? sample_hz : INPUT_SHAPER_HZ;
+    shaper_damping = damping;
+    shaper_freq_hz[0] = freq_a;
+    shaper_freq_hz[1] = freq_b;
+    shaper_freq_hz[2] = freq_c;
+
+    shaper_tick_interval = STEPPER_TIMER_RATE / shaper_hz;
+    if (shaper_tick_interval < 1) shaper_tick_interval = 1;
+    shaper_tick_us = 1000000UL / shaper_hz;
+    if (shaper_tick_us < 1) shaper_tick_us = 1;
+    shaper_last_interval = shaper_tick_interval;
+
+    // Each tower gets its own resonance frequency to safely handle asymmetric dynamics.
+    tower_shaper[0].configure_zvd(shaper_freq_hz[0], shaper_damping, shaper_hz);
+    tower_shaper[1].configure_zvd(shaper_freq_hz[1], shaper_damping, shaper_hz);
+    tower_shaper[2].configure_zvd(shaper_freq_hz[2], shaper_damping, shaper_hz);
+  }
+
+  void Stepper::report_input_shaper() {
+    SERIAL_ECHOPGM("Input Shaper: ");
+    SERIAL_ECHOPAIR("A", shaper_freq_hz[0]);
+    SERIAL_ECHOPAIR(" B", shaper_freq_hz[1]);
+    SERIAL_ECHOPAIR(" C", shaper_freq_hz[2]);
+    SERIAL_ECHOPAIR(" D", shaper_damping);
+    SERIAL_ECHOLNPAIR(" H", shaper_hz);
+  }
+
+  void Stepper::get_input_shaper(float &freq_a, float &freq_b, float &freq_c, float &damping, uint16_t &sample_hz) {
+    freq_a = shaper_freq_hz[0];
+    freq_b = shaper_freq_hz[1];
+    freq_c = shaper_freq_hz[2];
+    damping = shaper_damping;
+    sample_hz = shaper_hz;
+  }
+#endif
+
 void Stepper::init() {
 
   // Init Digipot Motor Current
@@ -1932,6 +2085,10 @@ void Stepper::init() {
   // Init Microstepping Pins
   #if HAS_MICROSTEPS
     microstep_init();
+  #endif
+
+  #if ENABLED(DELTA_INPUT_SHAPER)
+    set_input_shaper(INPUT_SHAPER_FREQ_A, INPUT_SHAPER_FREQ_B, INPUT_SHAPER_FREQ_C, INPUT_SHAPER_DAMPING, INPUT_SHAPER_HZ);
   #endif
 
   // Init Dir Pins
