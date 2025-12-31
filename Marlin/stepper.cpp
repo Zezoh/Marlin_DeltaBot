@@ -2039,7 +2039,7 @@ bool Stepper::is_block_busy(const block_t* const block) {
 
 #if ENABLED(DELTA_INPUT_SHAPER)
   void Stepper::set_input_shaper(const float freq_a, const float freq_b, const float freq_c, const float damping, const uint16_t sample_hz) {
-    shaper_hz = sample_hz;
+    shaper_hz = sample_hz ? sample_hz : INPUT_SHAPER_HZ;
     shaper_damping = damping;
     shaper_freq_hz[0] = freq_a;
     shaper_freq_hz[1] = freq_b;
