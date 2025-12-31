@@ -316,9 +316,6 @@
   #if DISABLED(DELTA)
     #error "DELTA_INPUT_SHAPER requires DELTA kinematics."
   #endif
-  #if ENABLED(S_CURVE_ACCELERATION)
-    #error "DELTA_INPUT_SHAPER is incompatible with S_CURVE_ACCELERATION."
-  #endif
   #if INPUT_SHAPER_HZ < 1
     #error "INPUT_SHAPER_HZ must be 1 or higher."
   #endif

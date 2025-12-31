@@ -925,6 +925,9 @@
  *
  * Applied after delta kinematics in tower space, before velocity integration.
  * Each tower gets its own shaper so resonance frequencies can differ.
+ *
+ * Note: When S_CURVE_ACCELERATION is enabled, the shaper is skipped and the
+ * original S-curve profile is used.
  */
 #define DELTA_INPUT_SHAPER
 #if ENABLED(DELTA_INPUT_SHAPER)

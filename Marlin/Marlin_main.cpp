@@ -11877,50 +11877,20 @@ inline void gcode_M502() {
     Stepper::get_input_shaper(freq_a, freq_b, freq_c, damping, sample_hz);
 
     bool seen = false;
-    if (parser.seenval('A')) {
-      const float value = parser.floatval('A');
-      if (value <= 0) {
-        SERIAL_PROTOCOLLNPGM("?A frequency must be > 0.");
-        return;
-      }
-      freq_a = value;
-      seen = true;
-    }
-    if (parser.seenval('B')) {
-      const float value = parser.floatval('B');
-      if (value <= 0) {
-        SERIAL_PROTOCOLLNPGM("?B frequency must be > 0.");
-        return;
-      }
-      freq_b = value;
-      seen = true;
-    }
-    if (parser.seenval('C')) {
-      const float value = parser.floatval('C');
-      if (value <= 0) {
-        SERIAL_PROTOCOLLNPGM("?C frequency must be > 0.");
-        return;
-      }
-      freq_c = value;
-      seen = true;
-    }
-    if (parser.seenval('D')) {
-      const float value = parser.floatval('D');
-      if (!WITHIN(value, 0, 1)) {
-        SERIAL_PROTOCOLLNPGM("?Damping out of range (0-1).");
-        return;
-      }
-      damping = value;
-      seen = true;
-    }
+    if (parser.seenval('A')) { freq_a = parser.floatval('A'); seen = true; }
+    if (parser.seenval('B')) { freq_b = parser.floatval('B'); seen = true; }
+    if (parser.seenval('C')) { freq_c = parser.floatval('C'); seen = true; }
+    if (parser.seenval('D')) { damping = parser.floatval('D'); seen = true; }
     if (parser.seenval('H')) {
       const int32_t hz = parser.intval('H');
-      if (hz <= 0 || hz > UINT16_MAX) {
+      if (hz > 0) {
+        sample_hz = (uint16_t)hz;
+        seen = true;
+      }
+      else {
         SERIAL_PROTOCOLLNPGM("?H value out of range.");
         return;
       }
-      sample_hz = (uint16_t)hz;
-      seen = true;
     }
 
     if (seen) {
@@ -11930,10 +11900,6 @@ inline void gcode_M502() {
       }
       if (!WITHIN(damping, 0, 1)) {
         SERIAL_PROTOCOLLNPGM("?Damping out of range (0-1).");
-        return;
-      }
-      if (sample_hz == 0) {
-        SERIAL_PROTOCOLLNPGM("?H value out of range.");
         return;
       }
       planner.synchronize();
@@ -13607,12 +13573,13 @@ void process_parsed_command() {
         case 540: gcode_M540(); break;                            // M540: Set Abort on Endstop Hit for SD Printing
       #endif
 
+      #if ENABLED(DELTA_INPUT_SHAPER)
+        case 593: gcode_M593(); break;                            // M593: Delta Input Shaper
+      #endif
+
       #if ENABLED(ADVANCED_PAUSE_FEATURE)
         case 600: gcode_M600(); break;                            // M600: Pause for Filament Change
         case 603: gcode_M603(); break;                            // M603: Configure Filament Change
-      #endif
-      #if ENABLED(DELTA_INPUT_SHAPER)
-        case 593: gcode_M593(); break;                            // M593: Delta Input Shaper
       #endif
 
       #if ENABLED(DUAL_X_CARRIAGE) || ENABLED(DUAL_NOZZLE_DUPLICATION_MODE)
