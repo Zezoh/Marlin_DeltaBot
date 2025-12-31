@@ -13552,6 +13552,9 @@ void process_parsed_command() {
         case 600: gcode_M600(); break;                            // M600: Pause for Filament Change
         case 603: gcode_M603(); break;                            // M603: Configure Filament Change
       #endif
+      #if ENABLED(DELTA_INPUT_SHAPER)
+        case 593: gcode_M593(); break;                            // M593: Delta Input Shaper
+      #endif
 
       #if ENABLED(DUAL_X_CARRIAGE) || ENABLED(DUAL_NOZZLE_DUPLICATION_MODE)
         case 605: gcode_M605(); break;                            // M605: Set Dual X Carriage movement mode
