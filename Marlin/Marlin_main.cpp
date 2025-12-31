@@ -596,26 +596,6 @@ uint8_t target_extruder;
   #define ADJUST_DELTA(V) NOOP
 #endif
 
-/**
-* Fast inverse SQRT from Quake III Arena
-* See: https://en.wikipedia.org/wiki/Fast_inverse_square_root
-*/
-#if ENABLED(DELTA_FAST_SQRT)
-  float Q_rsqrt(float number) {
-   long i;
-   float x2, y;
-   const float threehalfs = 1.5f;
-   x2 = number * 0.5f;
-   y  = number;
-   i  = * ( long * ) &y;                         // evil floating point bit level hacking
-   i  = 0x5F3759DF - ( i >> 1 );
-   y  = * ( float * ) &i;
-   y  = y * ( threehalfs - ( x2 * y * y ) );     // 1st iteration
-   // y  = y * ( threehalfs - ( x2 * y * y ) );  // 2nd iteration, this can be removed
-   return y;
- }
-#endif
-
 #if ENABLED(DELTA) && ENABLED(ONE_BUTTON)
     #define NOT_YET_CALIBRATED \
       ( \
@@ -2592,8 +2572,8 @@ void clean_up_after_endstop_or_probe_move() {
       probing_pause(true);
     #endif
 	
-	#if ENABLED(FSR_SENSOR)
-      thermalManager.resetThreshold();
+    #if ENABLED(FSR_SENSOR)
+      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
     #endif
 
     // Move down until probe triggered
@@ -2617,8 +2597,8 @@ void clean_up_after_endstop_or_probe_move() {
       if (probe_triggered && set_bltouch_deployed(false)) return true;
     #endif
 	
-	#if ENABLED(FSR_SENSOR)
-      thermalManager.resetThreshold();
+    #if ENABLED(FSR_SENSOR)
+      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
     #endif
 	
     endstops.hit_on_purpose();
@@ -2648,17 +2628,19 @@ void clean_up_after_endstop_or_probe_move() {
       if (DEBUGGING(LEVELING)) DEBUG_POS(">>> run_z_probe", current_position);
     #endif
 
+    #if ENABLED(FSR_SENSOR)
+      struct FsrProbeGuard {
+        FsrProbeGuard() { thermalManager.enable_fsr_probe(); }
+        ~FsrProbeGuard() { thermalManager.disable_fsr_probe(); }
+      } fsr_guard;
+    #endif
+
     // Stop the probe before it goes too low to prevent damage.
     // If Z isn't known then probe to -10mm.
     const float z_probe_low_point = TEST(axis_known_position, Z_AXIS) ? -zprobe_zoffset + Z_PROBE_LOW_POINT : -10.0;
 
     // Double-probing does a fast probe followed by a slow probe
     #if MULTIPLE_PROBING == 2
-
-	// Simulate probe deploy
-	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = true;
-    #endif
 
       // Do a first probe at the fast speed
       if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_FAST))) {
@@ -2691,91 +2673,69 @@ void clean_up_after_endstop_or_probe_move() {
         // If we don't make it to the z position (i.e. the probe triggered), move up to make clearance for the probe
         if (!do_probe_move(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST)))
           do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_BETWEEN_PROBES, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
-	  // Temp fix to auto activate fsr before reach to bed 
-	  	// #if ENABLED(FSR_SENSOR)
-          // thermalManager.resetThreshold();
-        // #endif
       }
     #endif
 	
-	#if MULTIPLE_PROBING == 3
+    #if MULTIPLE_PROBING == 3
 
-	// simulate probe deploy
-	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = true;
+      bool all_points_are_good = false;
+      float z_tolerance = 0.03;
+      float z_read[3] = {67.0};
+      float z_avg = 0.0;
+      int adjust_fsr_threshold = 0;
+
+      do {
+
+        if (adjust_fsr_threshold > 5) {
+          const float requested_ratio = thermalManager.fsr_threshold_ratio - 0.15f;
+          const bool clamped = !thermalManager.set_fsr_threshold_ratio(requested_ratio);
+          if (clamped) thermalManager.resetThreshold();
+          SERIAL_ECHOPGM("New fsr threshold: ");
+          SERIAL_ECHOLN(thermalManager.fsr_threshold_ratio);
+          adjust_fsr_threshold = 0;
+        }
+
+        // move down slowly to find bed
+        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+          #if ENABLED(DEBUG_LEVELING_FEATURE)
+            if (DEBUGGING(LEVELING)) {
+              SERIAL_ECHOLNPGM("SLOW Probe fail!");
+              DEBUG_POS("<<< run_z_probe", current_position);
+            }
+          #endif
+          return NAN;
+        }
+
+        z_read[2] = z_read[1];
+        z_read[1] = z_read[0];
+        z_read[0] = current_position[Z_AXIS];
+
+        do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_SLOW*2));
+
+        adjust_fsr_threshold += 1;
+        z_avg = (z_read[0] + z_read[1] + z_read[2]) / 3.0;
+
+        if (destination[Z_AXIS] > 66.90) {
+          int i = 10;
+          do {
+            idle();
+            delay(50);
+          } while (--i);
+          all_points_are_good = false;
+        } else {
+          // Check for all points
+          all_points_are_good =
+            abs(z_read[0] - z_avg) < z_tolerance &&
+            abs(z_read[1] - z_avg) < z_tolerance &&
+            abs(z_read[2] - z_avg) < z_tolerance;
+        }
+      } while (!all_points_are_good);
+
+      adjust_fsr_threshold = 0;
     #endif
-
-		bool all_points_are_good = false;
-		float z_tolerance = 0.03;
-		float z_read[3] = {67.0};
-		// float z_read[3] = {0.0};
-		float z_avg = 0.0;
-		int adjust_fsr_threshold = 0;
-        // float old_fsr_threshold = thermalManager.fsr_threshold_ratio;		
-
-		do {
-		   
-		  if (adjust_fsr_threshold > 5) {
-		    if (thermalManager.fsr_threshold_ratio > -4.0) {
-			  thermalManager.fsr_threshold_ratio -= 0.15;
-		    } else {
-			  //thermalManager.fsr_threshold_ratio -= 0.10;
-              thermalManager.resetThreshold();
-		    }
-		    SERIAL_ECHOPGM("New fsr threshold: ");
-		    SERIAL_ECHOLN(thermalManager.fsr_threshold_ratio);
-		    adjust_fsr_threshold = 0;
-		  }
-		   
-		  // move down slowly to find bed
-		  if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
-			#if ENABLED(DEBUG_LEVELING_FEATURE)
-			if (DEBUGGING(LEVELING)) {
-			  SERIAL_ECHOLNPGM("SLOW Probe fail!");
-			  DEBUG_POS("<<< run_z_probe", current_position);
-			}
-			#endif
-			return NAN;
-		  }
-
-		  z_read[2] = z_read[1];
-		  z_read[1] = z_read[0];
-		  z_read[0] = current_position[Z_AXIS];
-
-		  do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_SLOW*2));
-		  
-		  adjust_fsr_threshold += 1;
-		  // SERIAL_ECHOPGM("Fsr Counter: ");
-          // SERIAL_ECHOLN(adjust_fsr_threshold);
-		  z_avg = (z_read[0] + z_read[1] + z_read[2]) / 3.0;
-		  
-		  if (destination[Z_AXIS] > 66.90) {
-			int i = 10;
-			do {
-			  idle();
-			  delay(50);
-			} while (--i);
-			all_points_are_good = false;
-		  } else {
-			// Check for all points
-			all_points_are_good =
-			  abs(z_read[0] - z_avg) < z_tolerance &&
-			  abs(z_read[1] - z_avg) < z_tolerance &&
-			  abs(z_read[2] - z_avg) < z_tolerance;
-		  }
-		} while (!all_points_are_good);
-		
-		  adjust_fsr_threshold = 0; 
-		  // if (old_fsr_threshold != thermalManager.fsr_threshold_ratio) settings.save();
-		#endif
 
     #if MULTIPLE_PROBING > 3
-	
-		// Simulate probe deploy
-	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = true;
-    #endif
-	
+
       float probes_total = 0;
       for (uint8_t p = MULTIPLE_PROBING + 1; --p;) {
     #endif
@@ -2830,11 +2790,6 @@ void clean_up_after_endstop_or_probe_move() {
 
     #if ENABLED(DEBUG_LEVELING_FEATURE)
       if (DEBUGGING(LEVELING)) DEBUG_POS("<<< run_z_probe", current_position);
-    #endif
-    
-	// simulate probe stow
-	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = false;
     #endif
 
     return measured_z;
@@ -11459,9 +11414,29 @@ inline void gcode_M502() {
 
 #if ENABLED(FSR_SENSOR)
   inline void gcode_M853() {
-	if (parser.seen('V')) thermalManager.fsr_threshold_ratio = parser.value_float();
-	  SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
-	  SERIAL_EOL();
+    const bool has_value = parser.seen('V');
+    if (has_value) {
+      const float requested_ratio = parser.value_float();
+      const bool in_range = thermalManager.set_fsr_threshold_ratio(requested_ratio);
+      SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
+      if (!in_range) {
+        SERIAL_ECHOPGM(" (clamped to ");
+        SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MIN, 2);
+        SERIAL_ECHOPGM("..");
+        SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MAX, 2);
+        SERIAL_CHAR(')');
+      }
+      SERIAL_EOL();
+    }
+    else {
+      SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
+      SERIAL_ECHOPGM(" (range ");
+      SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MIN, 2);
+      SERIAL_ECHOPGM("..");
+      SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MAX, 2);
+      SERIAL_CHAR(')');
+      SERIAL_EOL();
+    }
   }
 #endif
 
@@ -13316,7 +13291,8 @@ void process_parsed_command() {
     }
     break;
 
-    case 'M': switch (parser.codenum) {
+    case 'M':
+      switch (parser.codenum) {
       #if HAS_RESUME_CONTINUE
         case 0: case 1: gcode_M0_M1(); break;                     // M0: Unconditional stop, M1: Conditional stop
       #endif
@@ -13604,6 +13580,9 @@ void process_parsed_command() {
       #if ENABLED(ADVANCED_PAUSE_FEATURE)
         case 600: gcode_M600(); break;                            // M600: Pause for Filament Change
         case 603: gcode_M603(); break;                            // M603: Configure Filament Change
+      #endif
+      #if ENABLED(DELTA_INPUT_SHAPER)
+        case 593: gcode_M593(); break;                            // M593: Delta Input Shaper
       #endif
 
       #if ENABLED(DUAL_X_CARRIAGE) || ENABLED(DUAL_NOZZLE_DUPLICATION_MODE)
@@ -14515,7 +14494,12 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
 
     // The number of segments-per-second times the duration
     // gives the number of segments
-    uint16_t segments = delta_segments_per_second * seconds;
+    uint16_t segments = ceilf(delta_segments_per_second * seconds);
+
+    #ifdef KINEMATIC_SEGMENT_MIN_LENGTH
+      const uint16_t seglimit = ceil(cartesian_mm * (1.0f / float(KINEMATIC_SEGMENT_MIN_LENGTH)));
+      NOMORE(segments, seglimit);
+    #endif
 
     // For SCARA enforce a minimum segment size
     #if IS_SCARA
@@ -14549,11 +14533,9 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
     //*/
 
     #if HAS_FEEDRATE_SCALING
-      // SCARA needs to scale the feed rate from mm/s to degrees/s
-      // i.e., Complete the angular vector in the given time.
+      // Scale the feed rate from effector mm/s to carriage degrees or mm/s.
       const float segment_length = cartesian_mm * inv_segments,
-                  inv_segment_length = 1.0f / segment_length, // 1/mm/segs
-                  inverse_secs = inv_segment_length * _feedrate_mm_s;
+                  inverse_secs = _feedrate_mm_s / segment_length;
 
       float oldA = planner.position_float[A_AXIS],
             oldB = planner.position_float[B_AXIS]
@@ -14561,6 +14543,12 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
               , oldC = planner.position_float[C_AXIS]
             #endif
             ;
+
+      #if ENABLED(SCARA_FEEDRATE_SCALING)
+        const float max_kinematic_feedrate = MIN(planner.max_feedrate_mm_s[A_AXIS], planner.max_feedrate_mm_s[B_AXIS]);
+      #elif ENABLED(DELTA_FEEDRATE_SCALING)
+        const float max_kinematic_feedrate = MIN3(planner.max_feedrate_mm_s[A_AXIS], planner.max_feedrate_mm_s[B_AXIS], planner.max_feedrate_mm_s[C_AXIS]);
+      #endif
 
       /*
       SERIAL_ECHOPGM("Scaled kinematic move: ");
@@ -14606,8 +14594,14 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
       #if ENABLED(SCARA_FEEDRATE_SCALING)
         // For SCARA scale the feed rate from mm/s to degrees/s
         // i.e., Complete the angular vector in the given time.
-        if (!planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], raw[Z_AXIS], raw[E_CART], HYPOT(delta[A_AXIS] - oldA, delta[B_AXIS] - oldB) * inverse_secs, active_extruder, segment_length))
-          break;
+        const float diff2 = HYPOT2(delta[A_AXIS] - oldA, delta[B_AXIS] - oldB);
+        if (diff2) {
+          float feed_mm_s = SQRT(diff2) * inverse_secs;
+          NOMORE(feed_mm_s, max_kinematic_feedrate);
+          if (!planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], raw[Z_AXIS], raw[E_CART], feed_mm_s, active_extruder, segment_length))
+            break;
+          oldA = delta[A_AXIS]; oldB = delta[B_AXIS];
+        }
         /*
         SERIAL_ECHO(segments);
         SERIAL_ECHOPAIR(": X=", raw[X_AXIS]); SERIAL_ECHOPAIR(" Y=", raw[Y_AXIS]);
@@ -14615,20 +14609,17 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
         SERIAL_ECHOLNPAIR(" F", HYPOT(delta[A_AXIS] - oldA, delta[B_AXIS] - oldB) * inverse_secs * 60);
         safe_delay(5);
         //*/
-        oldA = delta[A_AXIS]; oldB = delta[B_AXIS];
       #elif ENABLED(DELTA_FEEDRATE_SCALING)
         // For DELTA scale the feed rate from Effector mm/s to Carriage mm/s
         // i.e., Complete the linear vector in the given time.
-        if (!planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], raw[E_AXIS], SQRT(sq(delta[A_AXIS] - oldA) + sq(delta[B_AXIS] - oldB) + sq(delta[C_AXIS] - oldC)) * inverse_secs, active_extruder, segment_length))
-          break;
-        /*
-        SERIAL_ECHO(segments);
-        SERIAL_ECHOPAIR(": X=", raw[X_AXIS]); SERIAL_ECHOPAIR(" Y=", raw[Y_AXIS]);
-        SERIAL_ECHOPAIR(" A=", delta[A_AXIS]); SERIAL_ECHOPAIR(" B=", delta[B_AXIS]); SERIAL_ECHOPAIR(" C=", delta[C_AXIS]);
-        SERIAL_ECHOLNPAIR(" F", SQRT(sq(delta[A_AXIS] - oldA) + sq(delta[B_AXIS] - oldB) + sq(delta[C_AXIS] - oldC)) * inverse_secs * 60);
-        safe_delay(5);
-        //*/
-        oldA = delta[A_AXIS]; oldB = delta[B_AXIS]; oldC = delta[C_AXIS];
+        const float diff2 = sq(delta[A_AXIS] - oldA) + sq(delta[B_AXIS] - oldB) + sq(delta[C_AXIS] - oldC);
+        if (diff2) {
+          float feed_mm_s = SQRT(diff2) * inverse_secs;
+          NOMORE(feed_mm_s, max_kinematic_feedrate);
+          if (!planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], raw[E_AXIS], feed_mm_s, active_extruder, segment_length))
+            break;
+          oldA = delta[A_AXIS]; oldB = delta[B_AXIS]; oldC = delta[C_AXIS];
+        }
       #elif ENABLED(HANGPRINTER)
         if (!planner.buffer_line(line_lengths[A_AXIS], line_lengths[B_AXIS], line_lengths[C_AXIS], line_lengths[D_AXIS], raw[E_CART], _feedrate_mm_s, active_extruder, cartesian_segment_mm))
           break;
@@ -14647,7 +14638,9 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
     #if ENABLED(SCARA_FEEDRATE_SCALING)
       const float diff2 = HYPOT2(delta[A_AXIS] - oldA, delta[B_AXIS] - oldB);
       if (diff2) {
-        planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], rtarget[Z_AXIS], rtarget[E_CART], SQRT(diff2) * inverse_secs, active_extruder, segment_length);
+        float feed_mm_s = SQRT(diff2) * inverse_secs;
+        NOMORE(feed_mm_s, max_kinematic_feedrate);
+        planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], rtarget[Z_AXIS], rtarget[E_CART], feed_mm_s, active_extruder, segment_length);
         /*
         SERIAL_ECHOPAIR("final: A=", delta[A_AXIS]); SERIAL_ECHOPAIR(" B=", delta[B_AXIS]);
         SERIAL_ECHOPAIR(" adiff=", delta[A_AXIS] - oldA); SERIAL_ECHOPAIR(" bdiff=", delta[B_AXIS] - oldB);
@@ -14659,7 +14652,9 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
     #elif ENABLED(DELTA_FEEDRATE_SCALING)
       const float diff2 = sq(delta[A_AXIS] - oldA) + sq(delta[B_AXIS] - oldB) + sq(delta[C_AXIS] - oldC);
       if (diff2) {
-        planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], rtarget[E_AXIS], SQRT(diff2) * inverse_secs, active_extruder, segment_length);
+        float feed_mm_s = SQRT(diff2) * inverse_secs;
+        NOMORE(feed_mm_s, max_kinematic_feedrate);
+        planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], rtarget[E_AXIS], feed_mm_s, active_extruder, segment_length);
         /*
         SERIAL_ECHOPAIR("final: A=", delta[A_AXIS]); SERIAL_ECHOPAIR(" B=", delta[B_AXIS]); SERIAL_ECHOPAIR(" C=", delta[C_AXIS]);
         SERIAL_ECHOPAIR(" adiff=", delta[A_AXIS] - oldA); SERIAL_ECHOPAIR(" bdiff=", delta[B_AXIS] - oldB); SERIAL_ECHOPAIR(" cdiff=", delta[C_AXIS] - oldC);
@@ -14951,14 +14946,19 @@ void prepare_move_to_destination() {
 
     #if HAS_FEEDRATE_SCALING
       // SCARA needs to scale the feed rate from mm/s to degrees/s
-      const float inv_segment_length = 1.0f / (MM_PER_ARC_SEGMENT),
-                  inverse_secs = inv_segment_length * fr_mm_s;
+      const float inverse_secs = fr_mm_s * (1.0f / (MM_PER_ARC_SEGMENT));
       float oldA = planner.position_float[A_AXIS],
             oldB = planner.position_float[B_AXIS]
             #if ENABLED(DELTA_FEEDRATE_SCALING)
               , oldC = planner.position_float[C_AXIS]
             #endif
             ;
+
+      #if ENABLED(SCARA_FEEDRATE_SCALING)
+        const float max_kinematic_feedrate = MIN(planner.max_feedrate_mm_s[A_AXIS], planner.max_feedrate_mm_s[B_AXIS]);
+      #elif ENABLED(DELTA_FEEDRATE_SCALING)
+        const float max_kinematic_feedrate = MIN3(planner.max_feedrate_mm_s[A_AXIS], planner.max_feedrate_mm_s[B_AXIS], planner.max_feedrate_mm_s[C_AXIS]);
+      #endif
     #endif
 
     #if N_ARC_CORRECTION > 1
@@ -15012,15 +15012,25 @@ void prepare_move_to_destination() {
       #if ENABLED(SCARA_FEEDRATE_SCALING)
         // For SCARA scale the feed rate from mm/s to degrees/s
         // i.e., Complete the angular vector in the given time.
-        if (!planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], raw[Z_AXIS], raw[E_CART], HYPOT(delta[A_AXIS] - oldA, delta[B_AXIS] - oldB) * inverse_secs, active_extruder, MM_PER_ARC_SEGMENT))
-          break;
-        oldA = delta[A_AXIS]; oldB = delta[B_AXIS];
+        const float diff2 = HYPOT2(delta[A_AXIS] - oldA, delta[B_AXIS] - oldB);
+        if (diff2) {
+          float feed_mm_s = SQRT(diff2) * inverse_secs;
+          NOMORE(feed_mm_s, max_kinematic_feedrate);
+          if (!planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], raw[Z_AXIS], raw[E_CART], feed_mm_s, active_extruder, MM_PER_ARC_SEGMENT))
+            break;
+          oldA = delta[A_AXIS]; oldB = delta[B_AXIS];
+        }
       #elif ENABLED(DELTA_FEEDRATE_SCALING)
         // For DELTA scale the feed rate from Effector mm/s to Carriage mm/s
         // i.e., Complete the linear vector in the given time.
-        if (!planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], raw[E_AXIS], SQRT(sq(delta[A_AXIS] - oldA) + sq(delta[B_AXIS] - oldB) + sq(delta[C_AXIS] - oldC)) * inverse_secs, active_extruder, MM_PER_ARC_SEGMENT))
-          break;
-        oldA = delta[A_AXIS]; oldB = delta[B_AXIS]; oldC = delta[C_AXIS];
+        const float diff2 = sq(delta[A_AXIS] - oldA) + sq(delta[B_AXIS] - oldB) + sq(delta[C_AXIS] - oldC);
+        if (diff2) {
+          float feed_mm_s = SQRT(diff2) * inverse_secs;
+          NOMORE(feed_mm_s, max_kinematic_feedrate);
+          if (!planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], raw[E_AXIS], feed_mm_s, active_extruder, MM_PER_ARC_SEGMENT))
+            break;
+          oldA = delta[A_AXIS]; oldB = delta[B_AXIS]; oldC = delta[C_AXIS];
+        }
       #elif HAS_UBL_AND_CURVES
         float pos[XYZ] = { raw[X_AXIS], raw[Y_AXIS], raw[Z_AXIS] };
         planner.apply_leveling(pos);
@@ -15040,12 +15050,18 @@ void prepare_move_to_destination() {
 
     #if ENABLED(SCARA_FEEDRATE_SCALING)
       const float diff2 = HYPOT2(delta[A_AXIS] - oldA, delta[B_AXIS] - oldB);
-      if (diff2)
-        planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], cart[Z_AXIS], cart[E_CART], SQRT(diff2) * inverse_secs, active_extruder, MM_PER_ARC_SEGMENT);
+      if (diff2) {
+        float feed_mm_s = SQRT(diff2) * inverse_secs;
+        NOMORE(feed_mm_s, max_kinematic_feedrate);
+        planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], cart[Z_AXIS], cart[E_CART], feed_mm_s, active_extruder, MM_PER_ARC_SEGMENT);
+      }
     #elif ENABLED(DELTA_FEEDRATE_SCALING)
       const float diff2 = sq(delta[A_AXIS] - oldA) + sq(delta[B_AXIS] - oldB) + sq(delta[C_AXIS] - oldC);
-      if (diff2)
-        planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], cart[E_CART], SQRT(diff2) * inverse_secs, active_extruder, MM_PER_ARC_SEGMENT);
+      if (diff2) {
+        float feed_mm_s = SQRT(diff2) * inverse_secs;
+        NOMORE(feed_mm_s, max_kinematic_feedrate);
+        planner.buffer_segment(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], cart[E_CART], feed_mm_s, active_extruder, MM_PER_ARC_SEGMENT);
+      }
     #elif HAS_UBL_AND_CURVES
       float pos[XYZ] = { cart[X_AXIS], cart[Y_AXIS], cart[Z_AXIS] };
       planner.apply_leveling(pos);

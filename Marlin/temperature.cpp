@@ -207,13 +207,25 @@ int16_t Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TE
 #endif
 
 #if ENABLED(FSR_SENSOR)
-  bool Temperature::fsr_activation;
+  constexpr float Temperature::FSR_THRESHOLD_MIN;
+  constexpr float Temperature::FSR_THRESHOLD_MAX;
+
+  bool Temperature::fsr_activation = false;
   int16_t Temperature::current_fsr = 0;
-  float Temperature::fsr_previous = 0; 
-  float Temperature::fsr_bias = 0; 
+  float Temperature::fsr_previous = 0;
+  float Temperature::fsr_bias = 0;
   float Temperature::fsr_bias_probe = 0;
   float Temperature::fsr_threshold_ratio = FSR_THRESHOLD_RATIO;
-  
+
+  bool Temperature::set_fsr_threshold_ratio(const float ratio) {
+    const bool in_range = WITHIN(ratio, FSR_THRESHOLD_MIN, FSR_THRESHOLD_MAX);
+    float clamped_ratio = ratio;
+    if (clamped_ratio < FSR_THRESHOLD_MIN) clamped_ratio = FSR_THRESHOLD_MIN;
+    if (clamped_ratio > FSR_THRESHOLD_MAX) clamped_ratio = FSR_THRESHOLD_MAX;
+    fsr_threshold_ratio = clamped_ratio;
+    return in_range;
+  }
+
   // New variables for improved FSR functionality
   const float FSR_ALPHA = 0.3; // Smoothing factor for exponential moving average
   const int FSR_SAMPLES = 5; // Number of samples to average
