@@ -11886,6 +11886,55 @@ inline void gcode_M502() {
   }
 #endif // LIN_ADVANCE
 
+#if ENABLED(DELTA_INPUT_SHAPER)
+  /**
+   * M593: Get or Set Delta Tower Input Shaper
+   *
+   *  A<Hz>   Tower A resonance frequency
+   *  B<Hz>   Tower B resonance frequency
+   *  C<Hz>   Tower C resonance frequency
+   *  D<ratio> Damping ratio
+   *  H<Hz>   Shaper update rate
+   */
+  inline void gcode_M593() {
+    float freq_a, freq_b, freq_c, damping;
+    uint16_t sample_hz;
+    Stepper::get_input_shaper(freq_a, freq_b, freq_c, damping, sample_hz);
+
+    bool seen = false;
+    if (parser.seenval('A')) { freq_a = parser.floatval('A'); seen = true; }
+    if (parser.seenval('B')) { freq_b = parser.floatval('B'); seen = true; }
+    if (parser.seenval('C')) { freq_c = parser.floatval('C'); seen = true; }
+    if (parser.seenval('D')) { damping = parser.floatval('D'); seen = true; }
+    if (parser.seenval('H')) {
+      const int32_t hz = parser.intval('H');
+      if (hz > 0) {
+        sample_hz = (uint16_t)hz;
+        seen = true;
+      }
+      else {
+        SERIAL_PROTOCOLLNPGM("?H value out of range.");
+        return;
+      }
+    }
+
+    if (seen) {
+      if (freq_a <= 0 || freq_b <= 0 || freq_c <= 0) {
+        SERIAL_PROTOCOLLNPGM("?Frequency must be > 0.");
+        return;
+      }
+      if (!WITHIN(damping, 0, 1)) {
+        SERIAL_PROTOCOLLNPGM("?Damping out of range (0-1).");
+        return;
+      }
+      planner.synchronize();
+      Stepper::set_input_shaper(freq_a, freq_b, freq_c, damping, sample_hz);
+    }
+    else
+      Stepper::report_input_shaper();
+  }
+#endif // DELTA_INPUT_SHAPER
+
 #if HAS_TRINAMIC
   #if ENABLED(TMC_DEBUG)
     inline void gcode_M122() {
@@ -13546,6 +13595,10 @@ void process_parsed_command() {
 
       #if ENABLED(ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED)
         case 540: gcode_M540(); break;                            // M540: Set Abort on Endstop Hit for SD Printing
+      #endif
+
+      #if ENABLED(DELTA_INPUT_SHAPER)
+        case 593: gcode_M593(); break;                            // M593: Delta Input Shaper
       #endif
 
       #if ENABLED(ADVANCED_PAUSE_FEATURE)
