@@ -687,15 +687,13 @@ void Planner::init() {
 
 #endif // S_CURVE_ACCELERATION
 
-#define MINIMAL_STEP_RATE 120
-
 /**
  * Calculate trapezoid parameters from entry- and exit-speeds.
  * If entry_speed is 0 don't change the initial_rate.
  * Assumes that the implied initial_rate and final_rate are no less than
  * sqrt(block->acceleration_steps_per_s2 / 2). This is ensured through
- * minimum_planner_speed_sqr / min_entry_speed_sqr though note there's one
- * exception in recalculate_trapezoids().
+ * minimum_planner_speed_sqr / min_entry_speed_sqr in _populate_block()
+ * though note there's one exception in recalculate_trapezoids().
  **
  * ############ VERY IMPORTANT ############
  * NOTE that the PRECONDITION to call this function is that the block is
@@ -711,10 +709,11 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
   // Removing code to constrain values produces judder in direction-switching moves because the
   // current discrete stepping math diverges from physical motion under constant acceleration
   // when acceleration_steps_per_s2 is large compared to initial/final_rate.
-  NOLESS(initial_rate, long(MINIMAL_STEP_RATE));
-  NOLESS(final_rate,   long(MINIMAL_STEP_RATE));
-  NOMORE(initial_rate, block->nominal_rate);  // NOTE: The nominal rate may be less than MINIMAL_STEP_RATE!
-  NOMORE(final_rate,   block->nominal_rate);
+  NOLESS(initial_rate,        long(stepper.minimal_step_rate));
+  NOLESS(final_rate,          long(stepper.minimal_step_rate));
+  NOLESS(block->nominal_rate, long(stepper.minimal_step_rate));
+  NOMORE(initial_rate,        block->nominal_rate);  // NOTE: The nominal rate may be less than the minimal step rate!
+  NOMORE(final_rate,          block->nominal_rate);
 
   #if ENABLED(S_CURVE_ACCELERATION)
     uint32_t cruise_rate = initial_rate;
@@ -758,8 +757,8 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
   #endif
 
   // Store new block parameters
-  block->accelerate_until = accelerate_steps;
-  block->decelerate_after = accelerate_steps + plateau_steps;
+  block->accelerate_before = accelerate_steps;
+  block->decelerate_start = block->step_event_count - decelerate_steps;
   block->initial_rate = initial_rate;
   #if ENABLED(S_CURVE_ACCELERATION)
     block->acceleration_time = acceleration_time;
@@ -787,7 +786,7 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
          neighboring blocks.
       b. A block entry speed cannot exceed one reverse-computed from its exit speed (next->entry_speed)
          with a maximum allowable deceleration over the block travel distance.
-      c. The last (or newest appended) block is planned from a complete stop (an exit speed of zero).
+      c. The last (or newest appended) block is planned from safe_exit_speed_sqr.
     2. Go over every block in chronological (forward) order and dial down junction speed values if
       a. The exit speed exceeds the one forward-computed from its entry speed with the maximum allowable
          acceleration over the block travel distance.
@@ -2120,8 +2119,14 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   block->acceleration_steps_per_s2 = accel;
   block->acceleration = accel / steps_per_mm;
 
+  // Formula for the average speed over a 1 step worth of distance if starting from zero and
+  // accelerating at the current limit. Since we can only change the speed every step this is a
+  // good lower limit for the entry and exit speeds. Note that for calculate_trapezoid_for_block()
+  // to work correctly, this must be accurately set and propagated.
   const float step_length_mm = block->step_event_count ? block->millimeters / block->step_event_count : 0.0f;
   block->min_entry_speed_sqr = step_length_mm > 0 ? 0.5f * block->acceleration * step_length_mm : 0.0f;
+  // Go straight to/from nominal speed if block->acceleration is too high for it.
+  NOMORE(block->min_entry_speed_sqr, block->nominal_speed_sqr);
 
   #if DISABLED(S_CURVE_ACCELERATION)
     block->acceleration_rate = (uint32_t)(accel * (4096.0f * 4096.0f / (STEPPER_TIMER_RATE)));
@@ -2233,8 +2238,8 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
       // Get the lowest speed
       vmax_junction_sqr = MIN3(vmax_junction_sqr, block->nominal_speed_sqr, previous_nominal_speed_sqr);
     }
-    else // Init entry speed to zero. Assume it starts from rest. Planner will correct this later.
-      vmax_junction_sqr = 0;
+    else
+      vmax_junction_sqr = block->min_entry_speed_sqr;
 
     COPY(previous_unit_vec, unit_vec);
 
@@ -2321,15 +2326,15 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
 
   #endif // Classic Jerk Limiting
 
+  // High acceleration limits override low jerk/junction deviation limits (as fixing trapezoids
+  // or reducing acceleration introduces too much complexity and/or too much compute)
+  NOLESS(vmax_junction_sqr, block->min_entry_speed_sqr);
+
   // Max entry speed of this block equals the max exit speed of the previous block.
   block->max_entry_speed_sqr = vmax_junction_sqr;
 
-  // Initialize block entry speed. Compute based on deceleration to the block's minimum speed.
-  const float v_allowable_sqr = max_allowable_speed_sqr(-block->acceleration, block->min_entry_speed_sqr, block->millimeters);
-
-  // If we are trying to add a split block, start with the
-  // max. allowed speed to avoid an interrupted first move, but never below the per-block minimum.
-  block->entry_speed_sqr = MAX(block->min_entry_speed_sqr, MIN(vmax_junction_sqr, v_allowable_sqr));
+  // Set entry speed. The reverse and forward passes will optimize it later.
+  block->entry_speed_sqr = block->min_entry_speed_sqr;
   // Zero the initial_rate to indicate that calculate_trapezoid_for_block() hasn't been called yet.
   block->initial_rate = 0;
 

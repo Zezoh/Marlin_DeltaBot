@@ -228,6 +228,10 @@ class Stepper {
 
   public:
 
+    // The minimal step rate ensures calculations stay within limits
+    // and avoid the most unreasonably slow step rates.
+    static constexpr uint32_t minimal_step_rate = (F_CPU) / 500000U; // AVR shouldn't go below 32 (16MHz) or 40 (20MHz)
+
     #if ENABLED(X_DUAL_ENDSTOPS) || ENABLED(Y_DUAL_ENDSTOPS) || ENABLED(Z_DUAL_ENDSTOPS)
       static bool homing_dual_axis;
     #endif
@@ -276,8 +280,8 @@ class Stepper {
     static uint32_t advance_dividend[NUM_AXIS],
                     advance_divisor,
                     step_events_completed,  // The number of step events executed in the current block
-                    accelerate_until,       // The point from where we need to stop acceleration
-                    decelerate_after,       // The point from where we need to start decelerating
+                    accelerate_before,      // The count at which to start cruising
+                    decelerate_start,       // The count at which to start decelerating
                     step_event_count;       // The total event count for the current block
 
     // Mixing extruder mix delta_errors for bresenham tracing
@@ -525,9 +529,8 @@ class Stepper {
       #endif
       *loops = multistep;
 
-      constexpr uint32_t min_step_rate = F_CPU / 500000U;
-      NOLESS(step_rate, min_step_rate);
-      step_rate -= min_step_rate; // Correct for minimal speed
+      NOLESS(step_rate, minimal_step_rate);
+      step_rate -= minimal_step_rate; // Correct for minimal speed
       if (step_rate >= (8 * 256)) { // higher step rate
         const uint8_t tmp_step_rate = (step_rate & 0x00FF);
         const uint16_t table_address = (uint16_t)&speed_lookuptable_fast[(uint8_t)(step_rate >> 8)][0],
