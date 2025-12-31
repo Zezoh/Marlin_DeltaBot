@@ -918,6 +918,31 @@
  */
 //#define MAXIMUM_STEPPER_RATE 250000
 
+// @section motion
+
+/**
+ * Delta tower input shaping (tower-space acceleration shaping).
+ *
+ * Applied after delta kinematics in tower space, before velocity integration.
+ * Each tower gets its own shaper so resonance frequencies can differ.
+ */
+#define DELTA_INPUT_SHAPER
+#if ENABLED(DELTA_INPUT_SHAPER)
+  // Fixed update rate for the shaper (Hz). Keep within 1-4 kHz.
+  #define INPUT_SHAPER_HZ 2000
+
+  // ZVD shaper damping ratio (0.0 = no damping, typical 0.05-0.15).
+  #define INPUT_SHAPER_DAMPING 0.08f
+
+  // Per-tower resonance frequencies (Hz).
+  #define INPUT_SHAPER_FREQ_A 40.0f
+  #define INPUT_SHAPER_FREQ_B 42.0f
+  #define INPUT_SHAPER_FREQ_C 39.0f
+
+  // Maximum shaper delay in samples (ring-buffer size = delay + 1).
+  #define INPUT_SHAPER_MAX_DELAY_SAMPLES 60
+#endif
+
 // @section temperature
 
 // Control heater 0 and heater 1 in parallel.
