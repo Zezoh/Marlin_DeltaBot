@@ -926,7 +926,8 @@ void Planner::recalculate_trapezoids() {
           head_block_index = block_buffer_head;
 
   block_t *block = NULL, *next = NULL;
-  float next_entry_speed = 0.0f;
+  float current_entry_speed = 0.0f,
+        next_entry_speed = 0.0f;
   while (block_index != head_block_index) {
 
     next = &block_buffer[block_index];
@@ -963,13 +964,10 @@ void Planner::recalculate_trapezoids() {
             if (next->entry_speed_sqr != next->min_entry_speed_sqr)
               forward_pass_kernel(block, next);
 
-            const float current_entry_speed = next_entry_speed;
+            current_entry_speed = next_entry_speed;
             next_entry_speed = SQRT(next->entry_speed_sqr);
 
             calculate_trapezoid_for_block(block, current_entry_speed, next_entry_speed);
-            #if ENABLED(LIN_ADVANCE)
-              UNUSED(current_nominal_speed);
-            #endif
           }
 
           // Reset current only to ensure next trapezoid is computed - The
@@ -984,7 +982,7 @@ void Planner::recalculate_trapezoids() {
     block_index = next_block_index(block_index);
   }
 
-  // Last/newest block in buffer. Exit speed is set with MINIMUM_PLANNER_SPEED. Always recalculated.
+  // Last/newest block in buffer. Exit speed is set with per-block minimums. Always recalculated.
   if (next) {
 
     // Mark the next(last) block as RECALCULATE, to prevent the Stepper ISR running it.
@@ -995,18 +993,15 @@ void Planner::recalculate_trapezoids() {
     // But there is an inherent race condition here, as the block maybe
     // became BUSY, just before it was marked as RECALCULATE, so check
     // if that is the case!
-    if (!stepper.is_block_busy(current)) {
+    if (!stepper.is_block_busy(next)) {
       // Block is not BUSY, we won the race against the Stepper ISR:
 
-      const float next_nominal_speed = SQRT(next->nominal_speed_sqr),
-                  nomr = 1.0f / next_nominal_speed;
-      calculate_trapezoid_for_block(next, next_entry_speed * nomr, float(MINIMUM_PLANNER_SPEED) * nomr);
-      #if ENABLED(LIN_ADVANCE)
-        UNUSED(next_nominal_speed);
-      #endif
+      const float min_exit_speed = SQRT(next->min_entry_speed_sqr);
+      calculate_trapezoid_for_block(next, next_entry_speed, min_exit_speed);
     }
 
-    calculate_trapezoid_for_block(block, current_entry_speed, next_entry_speed);
+    if (block)
+      calculate_trapezoid_for_block(block, current_entry_speed, next_entry_speed);
     #if ENABLED(LIN_ADVANCE)
       if (block->use_advance_lead) {
         const float nominal_speed = SQRT(block->nominal_speed_sqr),
