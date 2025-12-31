@@ -13291,7 +13291,14 @@ void process_parsed_command() {
     }
     break;
 
-    case 'M': switch (parser.codenum) {
+    case 'M':
+      #if ENABLED(DELTA_INPUT_SHAPER)
+        if (parser.codenum == 593) {                               // M593: Delta Input Shaper
+          gcode_M593();
+          break;
+        }
+      #endif
+      switch (parser.codenum) {
       #if HAS_RESUME_CONTINUE
         case 0: case 1: gcode_M0_M1(); break;                     // M0: Unconditional stop, M1: Conditional stop
       #endif
@@ -13570,10 +13577,6 @@ void process_parsed_command() {
 
       #if ENABLED(ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED)
         case 540: gcode_M540(); break;                            // M540: Set Abort on Endstop Hit for SD Printing
-      #endif
-
-      #if ENABLED(DELTA_INPUT_SHAPER)
-        case 593: gcode_M593(); break;                            // M593: Delta Input Shaper
       #endif
 
       #if ENABLED(ADVANCED_PAUSE_FEATURE)
