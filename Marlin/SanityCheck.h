@@ -1710,8 +1710,8 @@ static_assert(COUNT(sanity_arr_3) <= NUM_AXIS_N, "DEFAULT_MAX_ACCELERATION has t
   #error "CNC_COORDINATE_SYSTEMS is incompatible with NO_WORKSPACE_OFFSETS."
 #endif
 
-#if !BLOCK_BUFFER_SIZE || !IS_POWER_OF_2(BLOCK_BUFFER_SIZE)
-  #error "BLOCK_BUFFER_SIZE must be a power of 2."
+#if BLOCK_BUFFER_SIZE < 2
+  #error "BLOCK_BUFFER_SIZE must be 2 or greater."
 #endif
 
 #if ENABLED(LED_CONTROL_MENU) && DISABLED(ULTIPANEL)

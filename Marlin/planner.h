@@ -44,11 +44,6 @@ enum BlockFlagBit : char {
   // Recalculate trapezoids on entry junction. For optimization.
   BLOCK_BIT_RECALCULATE,
 
-  // Nominal speed always reached.
-  // i.e., The segment is long enough, so the nominal speed is reachable if accelerating
-  // from a safe speed (in consideration of jerking from zero speed).
-  BLOCK_BIT_NOMINAL_LENGTH,
-
   // The block is segment 2+ of a longer move
   BLOCK_BIT_CONTINUED,
 
@@ -58,7 +53,6 @@ enum BlockFlagBit : char {
 
 enum BlockFlag : char {
   BLOCK_FLAG_RECALCULATE          = _BV(BLOCK_BIT_RECALCULATE),
-  BLOCK_FLAG_NOMINAL_LENGTH       = _BV(BLOCK_BIT_NOMINAL_LENGTH),
   BLOCK_FLAG_CONTINUED            = _BV(BLOCK_BIT_CONTINUED),
   BLOCK_FLAG_SYNC_POSITION        = _BV(BLOCK_BIT_SYNC_POSITION)
 };
@@ -83,8 +77,10 @@ typedef struct {
   // Fields used by the motion planner to manage acceleration
   float nominal_speed_sqr,                  // The nominal speed for this block in (mm/sec)^2
         entry_speed_sqr,                    // Entry speed at previous-current junction in (mm/sec)^2
+        min_entry_speed_sqr,                // Minimum entry speed for this block in (mm/sec)^2
         max_entry_speed_sqr,                // Maximum allowable junction entry speed in (mm/sec)^2
         millimeters,                        // The total travel of this block in mm
+        steps_per_mm,                       // Steps per mm
         acceleration;                       // acceleration mm/sec^2
 
   union {
@@ -150,7 +146,7 @@ typedef struct {
 
 #define HAS_POSITION_FLOAT (ENABLED(LIN_ADVANCE) || HAS_FEEDRATE_SCALING)
 
-#define BLOCK_MOD(n) ((n)&(BLOCK_BUFFER_SIZE-1))
+#define BLOCK_MOD(n) uint8_t((uint16_t)(n) % (BLOCK_BUFFER_SIZE))
 
 class Planner {
   public:
@@ -171,7 +167,6 @@ class Planner {
     static block_t block_buffer[BLOCK_BUFFER_SIZE];
     static volatile uint8_t block_buffer_head,      // Index of the next block to be pushed
                             block_buffer_nonbusy,   // Index of the first non busy block
-                            block_buffer_planned,   // Index of the optimally planned block
                             block_buffer_tail;      // Index of the busy block, if any
     static uint16_t cleaning_buffer_counter;        // A counter to disable queuing of blocks
     static uint8_t delay_before_delivering;         // This counter delays delivery of blocks when queue becomes empty to allow the opportunity of merging blocks
@@ -459,13 +454,13 @@ class Planner {
     #endif
 
     // Number of moves currently in the planner including the busy block, if any
-    FORCE_INLINE static uint8_t movesplanned() { return BLOCK_MOD(block_buffer_head - block_buffer_tail); }
+    FORCE_INLINE static uint8_t movesplanned() { return BLOCK_MOD(uint16_t(block_buffer_head) + BLOCK_BUFFER_SIZE - block_buffer_tail); }
 
     // Number of nonbusy moves currently in the planner
-    FORCE_INLINE static uint8_t nonbusy_movesplanned() { return BLOCK_MOD(block_buffer_head - block_buffer_nonbusy); }
+    FORCE_INLINE static uint8_t nonbusy_movesplanned() { return BLOCK_MOD(uint16_t(block_buffer_head) + BLOCK_BUFFER_SIZE - block_buffer_nonbusy); }
 
     // Remove all blocks from the buffer
-    FORCE_INLINE static void clear_block_buffer() { block_buffer_nonbusy = block_buffer_planned = block_buffer_head = block_buffer_tail = 0; }
+    FORCE_INLINE static void clear_block_buffer() { block_buffer_nonbusy = block_buffer_head = block_buffer_tail = 0; }
 
     // Check if movement queue is full
     FORCE_INLINE static bool is_full() { return block_buffer_tail == next_block_index(block_buffer_head); }
@@ -745,10 +740,6 @@ class Planner {
         // As this block is busy, advance the nonbusy block pointer
         block_buffer_nonbusy = next_block_index(block_buffer_tail);
 
-        // Push block_buffer_planned pointer, if encountered.
-        if (block_buffer_tail == block_buffer_planned)
-          block_buffer_planned = block_buffer_nonbusy;
-
         // Return the block
         return block;
       }
@@ -827,8 +818,8 @@ class Planner {
     /**
      * Get the index of the next / previous block in the ring buffer
      */
-    static constexpr uint8_t next_block_index(const uint8_t block_index) { return BLOCK_MOD(block_index + 1); }
-    static constexpr uint8_t prev_block_index(const uint8_t block_index) { return BLOCK_MOD(block_index - 1); }
+    static constexpr uint8_t next_block_index(const uint8_t block_index) { return BLOCK_MOD(uint16_t(block_index) + 1); }
+    static constexpr uint8_t prev_block_index(const uint8_t block_index) { return BLOCK_MOD(uint16_t(block_index) + BLOCK_BUFFER_SIZE - 1); }
 
     /**
      * Calculate the distance (not time) it takes to accelerate
@@ -870,13 +861,12 @@ class Planner {
       }
     #endif
 
-    static void calculate_trapezoid_for_block(block_t* const block, const float &entry_factor, const float &exit_factor);
+    static void calculate_trapezoid_for_block(block_t* const block, const float &entry_speed, const float &exit_speed);
 
-    static void reverse_pass_kernel(block_t* const current, const block_t * const next);
-    static void forward_pass_kernel(const block_t * const previous, block_t* const current, uint8_t block_index);
+    static bool reverse_pass_kernel(block_t* const current, const block_t * const next);
+    static void forward_pass_kernel(const block_t * const previous, block_t * const current);
 
     static void reverse_pass();
-    static void forward_pass();
 
     static void recalculate_trapezoids();
 
