@@ -1609,6 +1609,7 @@ void MarlinSettings::postprocess() {
         EEPROM_READ(shaper_freq);
         EEPROM_READ(shaper_damping);
         EEPROM_READ(shaper_hz);
+        if (shaper_hz == 0) shaper_hz = INPUT_SHAPER_HZ;
         if (!validating) Stepper::set_input_shaper(shaper_freq[0], shaper_freq[1], shaper_freq[2], shaper_damping, shaper_hz);
       #else
         float dummy_shaper_freq[3];
