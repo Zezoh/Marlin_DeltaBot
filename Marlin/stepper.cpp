@@ -1555,7 +1555,12 @@ uint32_t Stepper::stepper_block_phase_isr() {
               : current_block->cruise_rate;
         #else
           #if ENABLED(DELTA_INPUT_SHAPER)
-            acc_step_rate = input_shaper_step_rate(shaper_last_interval, 1);
+            if (tower_ratio_denom_q30 > 0)
+              acc_step_rate = input_shaper_step_rate(shaper_last_interval, 1);
+            else {
+              acc_step_rate = STEP_MULTIPLY(acceleration_time, current_block->acceleration_rate) + current_block->initial_rate;
+              NOMORE(acc_step_rate, current_block->nominal_rate);
+            }
           #else
             acc_step_rate = STEP_MULTIPLY(acceleration_time, current_block->acceleration_rate) + current_block->initial_rate;
             NOMORE(acc_step_rate, current_block->nominal_rate);
@@ -1597,7 +1602,18 @@ uint32_t Stepper::stepper_block_phase_isr() {
           }
         #else
           #if ENABLED(DELTA_INPUT_SHAPER)
-            step_rate = input_shaper_step_rate(shaper_last_interval, -1);
+            if (tower_ratio_denom_q30 > 0)
+              step_rate = input_shaper_step_rate(shaper_last_interval, -1);
+            else {
+              // Using the old trapezoidal control
+              step_rate = STEP_MULTIPLY(deceleration_time, current_block->acceleration_rate);
+              if (step_rate < acc_step_rate) { // Still decelerating?
+                step_rate = acc_step_rate - step_rate;
+                NOLESS(step_rate, current_block->final_rate);
+              }
+              else
+                step_rate = current_block->final_rate;
+            }
           #else
             // Using the old trapezoidal control
             step_rate = STEP_MULTIPLY(deceleration_time, current_block->acceleration_rate);
@@ -1636,8 +1652,20 @@ uint32_t Stepper::stepper_block_phase_isr() {
         #endif
 
         #if ENABLED(DELTA_INPUT_SHAPER) && DISABLED(S_CURVE_ACCELERATION)
-          const uint32_t step_rate = input_shaper_step_rate(shaper_last_interval, 0);
-          interval = calc_timer_interval(step_rate, oversampling_factor, &steps_per_isr);
+          if (tower_ratio_denom_q30 > 0) {
+            const uint32_t step_rate = input_shaper_step_rate(shaper_last_interval, 0);
+            interval = calc_timer_interval(step_rate, oversampling_factor, &steps_per_isr);
+          }
+          else {
+            // Calculate the ticks_nominal for this nominal speed, if not done yet
+            if (ticks_nominal < 0) {
+              // step_rate to timer interval and loops for the nominal speed
+              ticks_nominal = calc_timer_interval(current_block->nominal_rate, oversampling_factor, &steps_per_isr);
+            }
+
+            // The timer interval is just the nominal value for the nominal speed
+            interval = ticks_nominal;
+          }
         #else
           // Calculate the ticks_nominal for this nominal speed, if not done yet
           if (ticks_nominal < 0) {

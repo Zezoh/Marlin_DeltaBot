@@ -13572,6 +13572,10 @@ void process_parsed_command() {
         case 540: gcode_M540(); break;                            // M540: Set Abort on Endstop Hit for SD Printing
       #endif
 
+      #if ENABLED(DELTA_INPUT_SHAPER)
+        case 593: gcode_M593(); break;                            // M593: Delta Input Shaper
+      #endif
+
       #if ENABLED(ADVANCED_PAUSE_FEATURE)
       #if ENABLED(DELTA_INPUT_SHAPER)
         case 593: gcode_M593(); break;                          // M593: Delta Input Shaper
