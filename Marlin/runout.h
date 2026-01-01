@@ -54,8 +54,10 @@ class FilamentRunoutSensor {
 
     FORCE_INLINE static bool filament_present_debounced() {
       #if NUM_RUNOUT_SENSORS < 2
+        // Single shared runout sensor for all extruders.
         const bool present = READ(FIL_RUNOUT_PIN) ^ FIL_RUNOUT_INVERTING;
       #else
+        // Dedicated runout sensor per extruder.
         bool present;
         switch (active_extruder) {
           case 0: present = READ(FIL_RUNOUT_PIN) ^ FIL_RUNOUT_INVERTING; break;
