@@ -322,6 +322,7 @@ void Planner::init() {
    *
    */
   static uint32_t get_period_inverse(uint32_t d) {
+    if (d == 0) return 0;
 
     static const uint8_t inv_tab[256] PROGMEM = {
       255,253,252,250,248,246,244,242,240,238,236,234,233,231,229,227,
