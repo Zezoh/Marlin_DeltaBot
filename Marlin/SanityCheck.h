@@ -496,7 +496,10 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
 #endif
 
 /**
- * Filament Runout needs one or more pins and either SD Support or Auto print start detection
+ * Filament Runout
+ * - Requires one or more runout pins.
+ * - Requires SD support or Auto print start detection.
+ * - Autoload depends on runout sensors being enabled.
  */
 #if ENABLED(FILAMENT_RUNOUT_SENSOR)
   #if !PIN_EXISTS(FIL_RUNOUT)
@@ -516,6 +519,8 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
   #elif DISABLED(ADVANCED_PAUSE_FEATURE)
     static_assert(NULL == strstr(FILAMENT_RUNOUT_SCRIPT, "M600"), "ADVANCED_PAUSE_FEATURE is required to use M600 with FILAMENT_RUNOUT_SENSOR.");
   #endif
+#elif ENABLED(FILAMENT_AUTOLOAD)
+  #error "FILAMENT_AUTOLOAD requires FILAMENT_RUNOUT_SENSOR."
 #endif
 
 /**
