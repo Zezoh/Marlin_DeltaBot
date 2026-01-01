@@ -443,7 +443,7 @@ void Stepper::set_directions() {
    *  a "linear pop" velocity curve; with pop being the sixth derivative of position:
    *  velocity - 1st, acceleration - 2nd, jerk - 3rd, snap - 4th, crackle - 5th, pop - 6th
    *
-   *  The Bézier curve takes the form:
+   *  The 6th order Bézier curve takes the form:
    *
    *  V(t) = P_0 * B_0(t) + P_1 * B_1(t) + P_2 * B_2(t) + P_3 * B_3(t) + P_4 * B_4(t) + P_5 * B_5(t)
    *
@@ -463,7 +463,10 @@ void Stepper::set_directions() {
    *  Unfortunately, we cannot use forward-differencing to calculate each position through
    *  the curve, as Marlin uses variable timer periods. So, we require a formula of the form:
    *
+   *  6th order:
    *        V_f(t) = A*t^5 + B*t^4 + C*t^3 + D*t^2 + E*t + F
+   *  4th order:
+   *        V_f(t) = A*t^3 + B*t^2 + C*t + F
    *
    *  Looking at the above B_0(t) through B_5(t) expanded forms, if we take the coefficients of t^5
    *  through t of the Bézier form of V(t), we can determine that:
@@ -486,21 +489,35 @@ void Stepper::set_directions() {
    *        E = 0
    *        F = P_i
    *
+   *  For 4th order we want the initial and final acceleration to be a fixed S_CURVE_FACTOR fraction
+   *  and solving gives us:
+   *
+   *        A = 2*(1 - S_CURVE_FACTOR)*(P_i - P_t)
+   *        B = 3*(1 - S_CURVE_FACTOR)*(P_t - P_i)
+   *        C = S_CURVE_FACTOR*(P_t - P_i)
+   *        F = P_i
+   *
    *  As the t is evaluated in non uniform steps here, there is no other way rather than evaluating
    *  the Bézier curve at each point:
    *
+   *  6th order:
    *        V_f(t) = A*t^5 + B*t^4 + C*t^3 + F          [0 <= t <= 1]
+   *  4th order:
+   *        V_f(t) = A*t^3 + B*t^2 + C*t + F            [0 <= t <= 1]
    *
    * Floating point arithmetic execution time cost is prohibitive, so we will transform the math to
-   * use fixed point values to be able to evaluate it in realtime. Assuming a maximum of 250000 steps
-   * per second (driver pulses should at least be 2µS hi/2µS lo), and allocating 2 bits to avoid
-   * overflows on the evaluation of the Bézier curve, means we can use
+   * use fixed point values to be able to evaluate it in realtime.
+   *
+   * 6th order: Assumes a maximum of 250000 steps/s (driver pulses down to 2µS hi/2µS lo),
+   * and allocates 2 bits to avoid overflows on the evaluation of the Bézier curve:
    *
    *   t: unsigned Q0.32 (0 <= t < 1) |range 0 to 0xFFFFFFFF unsigned
    *   A:   signed Q24.7 ,            |range = +/- 250000 * 6 * 128 = +/- 192000000 = 0x0B71B000 | 28 bits + sign
    *   B:   signed Q24.7 ,            |range = +/- 250000 *15 * 128 = +/- 480000000 = 0x1C9C3800 | 29 bits + sign
    *   C:   signed Q24.7 ,            |range = +/- 250000 *10 * 128 = +/- 320000000 = 0x1312D000 | 29 bits + sign
    *   F:   signed Q24.7 ,            |range = +/- 250000     * 128 =      32000000 = 0x01E84800 | 25 bits + sign
+   *
+   * 4th order: With B coefficient at least 5x smaller the maximum will be ~1250000 steps/s.
    *
    * The trapezoid generator state contains the following information, that we will use to create and evaluate
    * the Bézier curve:
@@ -516,9 +533,15 @@ void Stepper::set_directions() {
    *
    *    At the start of each trapezoid, calculate the coefficients A,B,C,F and Advance [AV], as follows:
    *
+   *  6th order:
    *      A =  6*128*(VF - VI) =  768*(VF - VI)
    *      B = 15*128*(VI - VF) = 1920*(VI - VF)
    *      C = 10*128*(VF - VI) = 1280*(VF - VI)
+   *  4th order:
+   *      A =  2*(1-S_CURVE_FACTOR)*128*(VI - VF)
+   *      B =  3*(1-S_CURVE_FACTOR)*128*(VF - VI)
+   *      C =  S_CURVE_FACTOR*128*(VF - VI)
+   *  both:
    *      F =    128*VI        =  128*VI
    *     AV = (1<<32)/TS      ~= 0xFFFFFFFF / TS (To use ARM UDIV, that is 32 bits) (this is computed at the planner, to offload expensive calculations from the ISR)
    *
@@ -1490,7 +1513,7 @@ void Stepper::stepper_pulse_phase_isr() {
    * keeping the axis ratios constant for Bresenham stepping.
    */
   uint32_t Stepper::input_shaper_step_rate(const uint32_t elapsed_ticks, const int8_t accel_sign) {
-    if (!current_block || tower_ratio_denom_q30 == 0)
+    if (!current_block || tower_ratio_denom_q30 == 0 || shaper_tick_interval == 0 || shaper_hz == 0)
       return current_block ? current_block->initial_rate : 0;
 
     shaper_tick_accum += elapsed_ticks;

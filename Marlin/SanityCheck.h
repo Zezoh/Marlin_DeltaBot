@@ -634,6 +634,13 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
 #endif
 
 /**
+ * S_CURVE_ACCELERATION
+ */
+#if ENABLED(S_CURVE_ACCELERATION) && defined(S_CURVE_FACTOR)
+  static_assert(WITHIN(S_CURVE_FACTOR, 0, 1), "S_CURVE_FACTOR must be between 0.0 and 1.0.");
+#endif
+
+/**
  * Parking Extruder requirements
  */
 #if ENABLED(PARKING_EXTRUDER)
