@@ -42,7 +42,7 @@ class FilamentRunoutSensor {
 
     static void setup();
 
-    FORCE_INLINE static void reset() { runout_count = 0; filament_ran_out = false; }
+    FORCE_INLINE static void reset() { runout_count = 0; present_debounce = 0; filament_ran_out = false; }
 
     FORCE_INLINE static void run() {
       if ((IS_SD_PRINTING() || print_job_timer.isRunning()) && check() && !filament_ran_out) {
@@ -51,9 +51,37 @@ class FilamentRunoutSensor {
         planner.synchronize();
       }
     }
+
+    FORCE_INLINE static bool filament_present_debounced() {
+      #if NUM_RUNOUT_SENSORS < 2
+        const bool present = READ(FIL_RUNOUT_PIN) ^ FIL_RUNOUT_INVERTING;
+      #else
+        bool present;
+        switch (active_extruder) {
+          case 0: present = READ(FIL_RUNOUT_PIN) ^ FIL_RUNOUT_INVERTING; break;
+          case 1: present = READ(FIL_RUNOUT2_PIN) ^ FIL_RUNOUT_INVERTING; break;
+          #if NUM_RUNOUT_SENSORS > 2
+            case 2: present = READ(FIL_RUNOUT3_PIN) ^ FIL_RUNOUT_INVERTING; break;
+            #if NUM_RUNOUT_SENSORS > 3
+              case 3: present = READ(FIL_RUNOUT4_PIN) ^ FIL_RUNOUT_INVERTING; break;
+              #if NUM_RUNOUT_SENSORS > 4
+                case 4: present = READ(FIL_RUNOUT5_PIN) ^ FIL_RUNOUT_INVERTING; break;
+              #endif
+            #endif
+          #endif
+        }
+      #endif
+      if (!present) {
+        if (present_debounce > 0) present_debounce--;
+        return false;
+      }
+      if (!present_debounce) present_debounce = 2;
+      return true;
+    }
   private:
     static bool filament_ran_out;
     static uint8_t runout_count;
+    static uint8_t present_debounce;
 
     FORCE_INLINE static bool check() {
       #if NUM_RUNOUT_SENSORS < 2
