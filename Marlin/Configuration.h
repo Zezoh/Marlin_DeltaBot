@@ -58,10 +58,6 @@
 //#define SDCARD_DETECT_PIN 31
 //#define SDCARD_INVERTING true
 
-// For users using a filament sensor near the extruder like the Prusa Extruder
-// enable this feature to trigger a loading sequence
-#define FILAMENT_AUTOLOAD
-
 //===========================================================================
 //============================= Getting Started =============================
 //===========================================================================
@@ -1109,6 +1105,9 @@
   #define FIL_RUNOUT_INVERTING true // set to true to invert the logic of the sensor.
   #define FIL_RUNOUT_PULLUP          // Use internal pullup for filament runout pins.
   #define FILAMENT_RUNOUT_SCRIPT "M600"
+  // For users using a filament sensor near the extruder like the Prusa Extruder
+  // enable this feature to trigger a loading sequence
+  #define FILAMENT_AUTOLOAD
 #endif
 
 //===========================================================================
