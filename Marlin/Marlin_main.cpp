@@ -2615,6 +2615,9 @@ void clean_up_after_endstop_or_probe_move() {
 
   #if ENABLED(FSR_SENSOR)
     static bool do_fsr_probe_move(const float z, const float fr_mm_s) {
+      #if HAS_BED_PROBE
+        endstops.enable_z_probe(true);
+      #endif
       thermalManager.enable_fsr_probe();
       const bool probe_failed = do_probe_move(z, fr_mm_s);
       thermalManager.disable_fsr_probe();
