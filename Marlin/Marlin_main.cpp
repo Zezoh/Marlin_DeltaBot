@@ -2577,6 +2577,10 @@ void clean_up_after_endstop_or_probe_move() {
       probing_pause(true);
     #endif
 	
+    #if ENABLED(FSR_SENSOR)
+      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
+    #endif
+
     // Move down until probe triggered
     do_blocking_move_to_z(z, fr_mm_s);
 
@@ -2598,6 +2602,10 @@ void clean_up_after_endstop_or_probe_move() {
       if (probe_triggered && set_bltouch_deployed(false)) return true;
     #endif
 	
+    #if ENABLED(FSR_SENSOR)
+      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
+    #endif
+	
     endstops.hit_on_purpose();
 
     // Get Z where the steppers were interrupted
@@ -2613,6 +2621,20 @@ void clean_up_after_endstop_or_probe_move() {
     return !probe_triggered;
   }
 
+  #if ENABLED(FSR_SENSOR)
+    static bool do_fsr_probe_move(const float z, const float fr_mm_s) {
+      #if HAS_BED_PROBE
+        endstops.enable_z_probe(true);
+      #endif
+      thermalManager.enable_fsr_probe();
+      safe_delay(20);
+      thermalManager.resetThreshold();
+      const bool probe_failed = do_probe_move(z, fr_mm_s);
+      thermalManager.disable_fsr_probe();
+      return probe_failed;
+    }
+  #endif
+
   /**
    * @details Used by probe_pt to do a single Z probe at the current position.
    *          Leaves current_position[Z_AXIS] at the height where the probe triggered.
@@ -2623,18 +2645,6 @@ void clean_up_after_endstop_or_probe_move() {
 
     #if ENABLED(DEBUG_LEVELING_FEATURE)
       if (DEBUGGING(LEVELING)) DEBUG_POS(">>> run_z_probe", current_position);
-    #endif
-
-    #if ENABLED(FSR_SENSOR)
-      struct FsrProbeGuard {
-        FsrProbeGuard() {
-          #if HAS_BED_PROBE
-            endstops.enable_z_probe(true);
-          #endif
-          thermalManager.enable_fsr_probe();
-        }
-        ~FsrProbeGuard() { thermalManager.disable_fsr_probe(); }
-      };
     #endif
 
     // Stop the probe before it goes too low to prevent damage.
@@ -2651,8 +2661,7 @@ void clean_up_after_endstop_or_probe_move() {
         if (current_position[Z_AXIS] > z)
           do_blocking_move_to_z(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
 
-        FsrProbeGuard fsr_guard;
-        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        if (do_fsr_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
           #if ENABLED(DEBUG_LEVELING_FEATURE)
             if (DEBUGGING(LEVELING)) {
               SERIAL_ECHOLNPGM("SLOW Probe fail!");
@@ -2703,9 +2712,6 @@ void clean_up_after_endstop_or_probe_move() {
 	
     #if MULTIPLE_PROBING == 3
 
-      #if ENABLED(FSR_SENSOR)
-        FsrProbeGuard fsr_guard;
-      #endif
       bool all_points_are_good = false;
       float z_tolerance = 0.03;
       float z_read[3] = {67.0};
@@ -2724,7 +2730,11 @@ void clean_up_after_endstop_or_probe_move() {
         }
 
         // move down slowly to find bed
-        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #if ENABLED(FSR_SENSOR)
+          if (do_fsr_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #else
+          if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #endif
           #if ENABLED(DEBUG_LEVELING_FEATURE)
             if (DEBUGGING(LEVELING)) {
               SERIAL_ECHOLNPGM("SLOW Probe fail!");
@@ -2764,15 +2774,16 @@ void clean_up_after_endstop_or_probe_move() {
 
     #if MULTIPLE_PROBING > 3
 
-      #if ENABLED(FSR_SENSOR)
-        FsrProbeGuard fsr_guard;
-      #endif
       float probes_total = 0;
       for (uint8_t p = MULTIPLE_PROBING + 1; --p;) {
     #endif
 
         // move down slowly to find bed
-        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #if ENABLED(FSR_SENSOR)
+          if (do_fsr_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #else
+          if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #endif
           #if ENABLED(DEBUG_LEVELING_FEATURE)
             if (DEBUGGING(LEVELING)) {
               SERIAL_ECHOLNPGM("SLOW Probe fail!");
