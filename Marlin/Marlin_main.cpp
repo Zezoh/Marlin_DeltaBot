@@ -15381,9 +15381,9 @@ static millis_t duration_in_millis = 1000;
   static millis_t buttonTimer = 0;
   static millis_t pressDuration = 0;          // stores the duration (in milliseconds) that the button was pressed/held down for
   static millis_t debounceThreshold = 50;      // the threshold (in milliseconds) for a button press to be confirmed (i.e. not "noise")
-  static millis_t lastPressTime = 0;           // stores the time of the last button press
   static millis_t doubleClickThreshold = 500;  // the threshold (in milliseconds) for detecting a double click
   static millis_t shortPressConfirm_ms = 0;    // earliest time a pending short press should execute
+  static millis_t lastReleaseTime = 0;         // stores the time of the last button release
 
   inline void finalize_short_press_if_ready() {
     const millis_t now = millis();
@@ -15430,7 +15430,7 @@ static millis_t duration_in_millis = 1000;
           shortPressPending = true;
           shortPressConfirm_ms = now + doubleClickThreshold;
         }
-        lastPressTime = now;
+        lastReleaseTime = now;
       }
 
       longPressActive = false;
