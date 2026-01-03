@@ -882,25 +882,30 @@ extern "C" {
 
 #endif
 
-#if ENABLED(FILAMENT_AUTOLOAD) // only support single sensor applying to all extruders
-
-	// #define FILAMENT_NOT_PRESENT (READ(FIL_RUNOUT_PIN) ^ FIL_RUNOUT_INVERTING)
-	// #define FILAMENT_PRESENT (!FILAMENT_NOT_PRESENT)
-	
-  #define FILAMENT_PRESENT (READ(FIL_RUNOUT_PIN) ^ FIL_RUNOUT_INVERTING)
+#if ENABLED(FILAMENT_AUTOLOAD)
+  #define FILAMENT_PRESENT FilamentRunoutSensor::filament_present(active_extruder)
   #define FILAMENT_NOT_PRESENT (!FILAMENT_PRESENT)
+
+  inline void wait_for_filament_insert() {
+    KEEPALIVE_STATE(PAUSED_FOR_USER);
+
+    wait_for_filament = true; // LCD click or M108 will clear this
+    while (wait_for_filament) {
+      idle(true);
+      KEEPALIVE_STATE(IN_HANDLER);
+    }
+  }
 
   inline void clear_wait_for_filament() {
     static uint8_t runout_button_debounce = 0;
-    if (FILAMENT_NOT_PRESENT) {
+    const bool filament_present = FILAMENT_PRESENT;
+    if (!filament_present) {
       if (runout_button_debounce > 0) runout_button_debounce--;
     } else if (!runout_button_debounce) {
       runout_button_debounce = 2;
       if (printer_states.activity_state == ACTIVITY_CHANGING_FILAMENT) {
-        if (FILAMENT_PRESENT) {
-          delay(100);
-          wait_for_filament = false;
-        }
+        delay(100);
+        wait_for_filament = false;
       }
     }
   }
@@ -15350,62 +15355,15 @@ void manage_one_led() {
 
 #endif
 
-#if ENABLED(FILAMENT_AUTOLOAD) // only support single sensor applying to all extruders
+#if ENABLED(FILAMENT_AUTOLOAD)
 
 	 inline void auto_load_filament() {
-
-		// SERIAL_ECHO_START();
-		// SERIAL_ECHOLNPGM(MSG_FILAMENT_CHANGE_INSERT); // Show "insert filament"
-
-		KEEPALIVE_STATE(PAUSED_FOR_USER);
-
-		wait_for_filament = true; // LCD click or M108 will clear this
-		while (wait_for_filament) {
-		  idle(true);
-		  KEEPALIVE_STATE(IN_HANDLER);
-		}
-
-		// Slow Load filament
-		do_pause_e_move(FILAMENT_CHANGE_SLOW_LOAD_LENGTH, FILAMENT_CHANGE_SLOW_LOAD_FEEDRATE);
-
-		// Fast Load Filament
-		#if FILAMENT_CHANGE_FAST_LOAD_ACCEL > 0
-		const float saved_acceleration = planner.retract_acceleration;
-		planner.retract_acceleration = FILAMENT_CHANGE_FAST_LOAD_ACCEL;
-		#endif
-
-		do_pause_e_move(FILAMENT_CHANGE_FAST_LOAD_LENGTH, FILAMENT_CHANGE_FAST_LOAD_FEEDRATE);
-
-		#if FILAMENT_CHANGE_FAST_LOAD_ACCEL > 0
-		planner.retract_acceleration = saved_acceleration;
-		#endif
-
-		// return true;
+		wait_for_filament_insert();
+		load_filament(FILAMENT_CHANGE_SLOW_LOAD_LENGTH, FILAMENT_CHANGE_FAST_LOAD_LENGTH, 0, 0, false, false, ADVANCED_PAUSE_MODE_LOAD_FILAMENT);
 	}
 
 	 inline void auto_unload_filament() {
-	  // Retract filament
-	  do_pause_e_move(-FILAMENT_UNLOAD_RETRACT_LENGTH, PAUSE_PARK_RETRACT_FEEDRATE);
-
-	  // Wait for filament to cool
-	  safe_delay(FILAMENT_UNLOAD_DELAY);
-
-	  // Quickly purge
-	  do_pause_e_move(FILAMENT_UNLOAD_RETRACT_LENGTH + FILAMENT_UNLOAD_PURGE_LENGTH, planner.max_feedrate_mm_s[E_AXIS]);
-
-	  // Unload filament
-	  #if FILAMENT_CHANGE_FAST_LOAD_ACCEL > 0
-	  const float saved_acceleration = planner.retract_acceleration;
-	  planner.retract_acceleration = FILAMENT_CHANGE_UNLOAD_ACCEL;
-	  #endif
-
-	  do_pause_e_move(-FILAMENT_CHANGE_UNLOAD_LENGTH, FILAMENT_CHANGE_UNLOAD_FEEDRATE);
-
-	  #if FILAMENT_CHANGE_FAST_LOAD_ACCEL > 0
-	  planner.retract_acceleration = saved_acceleration;
-	  #endif
-
-	  // return true;
+	  unload_filament(-FILAMENT_CHANGE_UNLOAD_LENGTH, false, ADVANCED_PAUSE_MODE_UNLOAD_FILAMENT);
 	}
 #endif
 
@@ -15441,37 +15399,41 @@ static millis_t duration_in_millis = 1000;
     const bool pressed = ONE_BUTTON_PRESSED;
     const millis_t now = millis();
 
-  // Detect a new press and capture start time
-  if (pressed && !buttonActive) {
-    buttonActive = true;
-    buttonTimer = now;
-    pressDuration = 0;
-  }
-
-  if (pressed && buttonActive) {
-    pressDuration = now - buttonTimer;
-
-    // Long press detected once per hold
-    if (!longPressActive && pressDuration >= duration_in_millis) {
-      longPressActive = true;
-      longPress = true;
+    // Detect a new press and capture start time
+    if (pressed && !buttonActive) {
+      buttonActive = true;
+      buttonTimer = now;
+      pressDuration = 0;
+      longPressActive = false;
     }
-    
-    pressDuration = millis() - buttonTimer;
 
-      if (longPressActive) {
-        longPressActive = false;
-      } else if (pressDuration > debounceThreshold) {
+    if (pressed && buttonActive) {
+      pressDuration = now - buttonTimer;
+
+      // Long press detected once per hold
+      if (!longPressActive && pressDuration >= duration_in_millis) {
+        longPressActive = true;
+        longPress = true;
+        shortPressPending = false;
+        doubleClick = false;
+      }
+    }
+
+    if (!pressed && buttonActive) {
+      buttonActive = false;
+
+      if (!longPressActive && pressDuration > debounceThreshold) {
         if (now - lastPressTime <= doubleClickThreshold) {
           doubleClick = true;
           shortPressPending = false;
-        }
-        else {
+        } else {
           shortPressPending = true;
           shortPressConfirm_ms = now + doubleClickThreshold;
         }
         lastPressTime = now;
       }
+
+      longPressActive = false;
     }
   }
 
