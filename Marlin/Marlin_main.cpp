@@ -15466,6 +15466,11 @@ static millis_t duration_in_millis = 1000;
       buttonActive = false;
       pressDuration = now - buttonTimer;
 
+      if (longPressActive) {
+        longPressActive = false;
+        return;
+      }
+
       if (!longPressActive && pressDuration > debounceThreshold) {
         if (shortPressPending && !ELAPSED(now, lastReleaseTime + doubleClickThreshold)) {
           doubleClick = true;
