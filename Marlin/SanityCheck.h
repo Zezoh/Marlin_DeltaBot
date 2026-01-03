@@ -519,6 +519,25 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
   #elif DISABLED(ADVANCED_PAUSE_FEATURE)
     static_assert(NULL == strstr(FILAMENT_RUNOUT_SCRIPT, "M600"), "ADVANCED_PAUSE_FEATURE is required to use M600 with FILAMENT_RUNOUT_SENSOR.");
   #endif
+#endif
+
+/**
+ * One Button vs. Filament Runout pin conflicts
+ */
+#if ENABLED(ONE_BUTTON) && ENABLED(FILAMENT_RUNOUT_SENSOR)
+  #if PIN_EXISTS(ONE_BUTTON)
+    #if ONE_BUTTON_PIN == FIL_RUNOUT_PIN
+      #error "ONE_BUTTON_PIN conflicts with FIL_RUNOUT_PIN."
+    #elif NUM_RUNOUT_SENSORS > 1 && ONE_BUTTON_PIN == FIL_RUNOUT2_PIN
+      #error "ONE_BUTTON_PIN conflicts with FIL_RUNOUT2_PIN."
+    #elif NUM_RUNOUT_SENSORS > 2 && ONE_BUTTON_PIN == FIL_RUNOUT3_PIN
+      #error "ONE_BUTTON_PIN conflicts with FIL_RUNOUT3_PIN."
+    #elif NUM_RUNOUT_SENSORS > 3 && ONE_BUTTON_PIN == FIL_RUNOUT4_PIN
+      #error "ONE_BUTTON_PIN conflicts with FIL_RUNOUT4_PIN."
+    #elif NUM_RUNOUT_SENSORS > 4 && ONE_BUTTON_PIN == FIL_RUNOUT5_PIN
+      #error "ONE_BUTTON_PIN conflicts with FIL_RUNOUT5_PIN."
+    #endif
+  #endif
 #elif ENABLED(FILAMENT_AUTOLOAD)
   #error "FILAMENT_AUTOLOAD requires FILAMENT_RUNOUT_SENSOR."
 #endif
