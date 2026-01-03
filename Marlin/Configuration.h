@@ -852,7 +852,6 @@
 #define FSR_SENSOR
 #define FSR_THRESHOLD_RATIO -1.5
 
-
 /**
  * Enable one or more of the following if probing seems unreliable.
  * Heaters and/or fans can be disabled during probing to minimize electrical

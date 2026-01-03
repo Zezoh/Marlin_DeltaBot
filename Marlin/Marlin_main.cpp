@@ -2577,10 +2577,6 @@ void clean_up_after_endstop_or_probe_move() {
       probing_pause(true);
     #endif
 	
-    #if ENABLED(FSR_SENSOR)
-      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
-    #endif
-
     // Move down until probe triggered
     do_blocking_move_to_z(z, fr_mm_s);
 
@@ -2602,10 +2598,6 @@ void clean_up_after_endstop_or_probe_move() {
       if (probe_triggered && set_bltouch_deployed(false)) return true;
     #endif
 	
-    #if ENABLED(FSR_SENSOR)
-      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
-    #endif
-	
     endstops.hit_on_purpose();
 
     // Get Z where the steppers were interrupted
@@ -2621,6 +2613,15 @@ void clean_up_after_endstop_or_probe_move() {
     return !probe_triggered;
   }
 
+  #if ENABLED(FSR_SENSOR)
+    static bool do_fsr_probe_move(const float z, const float fr_mm_s) {
+      thermalManager.enable_fsr_probe();
+      const bool probe_failed = do_probe_move(z, fr_mm_s);
+      thermalManager.disable_fsr_probe();
+      return probe_failed;
+    }
+  #endif
+
   /**
    * @details Used by probe_pt to do a single Z probe at the current position.
    *          Leaves current_position[Z_AXIS] at the height where the probe triggered.
@@ -2633,13 +2634,6 @@ void clean_up_after_endstop_or_probe_move() {
       if (DEBUGGING(LEVELING)) DEBUG_POS(">>> run_z_probe", current_position);
     #endif
 
-    #if ENABLED(FSR_SENSOR)
-      struct FsrProbeGuard {
-        FsrProbeGuard() { thermalManager.enable_fsr_probe(); }
-        ~FsrProbeGuard() { thermalManager.disable_fsr_probe(); }
-      } fsr_guard;
-    #endif
-
     // Stop the probe before it goes too low to prevent damage.
     // If Z isn't known then probe to -10mm.
     const float z_probe_low_point = TEST(axis_known_position, Z_AXIS) ? -zprobe_zoffset + Z_PROBE_LOW_POINT : -10.0;
@@ -2647,25 +2641,33 @@ void clean_up_after_endstop_or_probe_move() {
     // Double-probing does a fast probe followed by a slow probe
     #if MULTIPLE_PROBING == 2
 
-      // Do a first probe at the fast speed
-      if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_FAST))) {
+      #if ENABLED(FSR_SENSOR)
+        // Avoid arming the FSR while moving fast to prevent false triggers.
+        float z = Z_CLEARANCE_DEPLOY_PROBE + 5.0;
+        if (zprobe_zoffset < 0) z -= zprobe_zoffset;
+        if (current_position[Z_AXIS] > z)
+          do_blocking_move_to_z(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+      #else
+        // Do a first probe at the fast speed
+        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_FAST))) {
+          #if ENABLED(DEBUG_LEVELING_FEATURE)
+            if (DEBUGGING(LEVELING)) {
+              SERIAL_ECHOLNPGM("FAST Probe fail!");
+              DEBUG_POS("<<< run_z_probe", current_position);
+            }
+          #endif
+          return NAN;
+        }
+
+        float first_probe_z = current_position[Z_AXIS];
+
         #if ENABLED(DEBUG_LEVELING_FEATURE)
-          if (DEBUGGING(LEVELING)) {
-            SERIAL_ECHOLNPGM("FAST Probe fail!");
-            DEBUG_POS("<<< run_z_probe", current_position);
-          }
+          if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR("1st Probe Z:", first_probe_z);
         #endif
-        return NAN;
-      }
 
-      float first_probe_z = current_position[Z_AXIS];
-
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR("1st Probe Z:", first_probe_z);
+        // move up to make clearance for the probe
+        do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
       #endif
-
-      // move up to make clearance for the probe
-      do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
 
     #else
 
@@ -2675,9 +2677,13 @@ void clean_up_after_endstop_or_probe_move() {
       if (zprobe_zoffset < 0) z -= zprobe_zoffset;
 
       if (current_position[Z_AXIS] > z) {
-        // If we don't make it to the z position (i.e. the probe triggered), move up to make clearance for the probe
-        if (!do_probe_move(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST)))
-          do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_BETWEEN_PROBES, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+        #if ENABLED(FSR_SENSOR)
+          do_blocking_move_to_z(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+        #else
+          // If we don't make it to the z position (i.e. the probe triggered), move up to make clearance for the probe
+          if (!do_probe_move(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST)))
+            do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_BETWEEN_PROBES, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+        #endif
       }
     #endif
 	
@@ -2701,7 +2707,11 @@ void clean_up_after_endstop_or_probe_move() {
         }
 
         // move down slowly to find bed
-        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #if ENABLED(FSR_SENSOR)
+          if (do_fsr_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #else
+          if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #endif
           #if ENABLED(DEBUG_LEVELING_FEATURE)
             if (DEBUGGING(LEVELING)) {
               SERIAL_ECHOLNPGM("SLOW Probe fail!");
@@ -2746,7 +2756,11 @@ void clean_up_after_endstop_or_probe_move() {
     #endif
 
         // move down slowly to find bed
-        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #if ENABLED(FSR_SENSOR)
+          if (do_fsr_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #else
+          if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+        #endif
           #if ENABLED(DEBUG_LEVELING_FEATURE)
             if (DEBUGGING(LEVELING)) {
               SERIAL_ECHOLNPGM("SLOW Probe fail!");
@@ -2774,17 +2788,21 @@ void clean_up_after_endstop_or_probe_move() {
 
     #elif MULTIPLE_PROBING == 2
 
-      const float z2 = current_position[Z_AXIS];
+      #if ENABLED(FSR_SENSOR)
+        const float measured_z = current_position[Z_AXIS];
+      #else
+        const float z2 = current_position[Z_AXIS];
 
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) {
-          SERIAL_ECHOPAIR("2nd Probe Z:", z2);
-          SERIAL_ECHOLNPAIR(" Discrepancy:", first_probe_z - z2);
-        }
+        #if ENABLED(DEBUG_LEVELING_FEATURE)
+          if (DEBUGGING(LEVELING)) {
+            SERIAL_ECHOPAIR("2nd Probe Z:", z2);
+            SERIAL_ECHOLNPAIR(" Discrepancy:", first_probe_z - z2);
+          }
+        #endif
+
+        // Return a weighted average of the fast and slow probes
+        const float measured_z = (z2 * 3.0 + first_probe_z * 2.0) * 0.2;
       #endif
-
-      // Return a weighted average of the fast and slow probes
-      const float measured_z = (z2 * 3.0 + first_probe_z * 2.0) * 0.2;
 
     #else
 
