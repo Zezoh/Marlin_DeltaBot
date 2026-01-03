@@ -216,6 +216,8 @@ int16_t Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TE
   float Temperature::fsr_bias = 0;
   float Temperature::fsr_bias_probe = 0;
   float Temperature::fsr_threshold_ratio = FSR_THRESHOLD_RATIO;
+  bool Temperature::fsr_ready = false;
+  uint8_t Temperature::fsr_sample_count = 0;
 
   bool Temperature::set_fsr_threshold_ratio(const float ratio) {
     const bool in_range = WITHIN(ratio, FSR_THRESHOLD_MIN, FSR_THRESHOLD_MAX);
@@ -2297,6 +2299,15 @@ void Temperature::isr() {
           // Store in circular buffer
           fsr_sample_buffer[fsr_sample_index] = current_fsr;
           fsr_sample_index = (fsr_sample_index + 1) % FSR_SAMPLES;
+          if (fsr_sample_count < FSR_SAMPLES) fsr_sample_count++;
+          if (fsr_sample_count < FSR_SAMPLES) {
+            fsr_previous = current_fsr;
+            fsr_bias = 0.0;
+            fsr_bias_probe = 0.0;
+            fsr_ready = false;
+            break;
+          }
+          fsr_ready = true;
           
           // Calculate average of samples
           int32_t fsr_sum = 0;

@@ -383,19 +383,23 @@ class Temperature {
       static float fsr_bias_probe;
       static float fsr_threshold_ratio;
       static bool fsr_activation;
+      static bool fsr_ready;
+      static uint8_t fsr_sample_count;
 
       static bool set_fsr_threshold_ratio(const float ratio);
       FORCE_INLINE static bool fsrEnabled() { return fsr_activation; }
       FORCE_INLINE static void enable_fsr_probe() { fsr_activation = true; resetThreshold(); }
-      FORCE_INLINE static void disable_fsr_probe() { fsr_activation = false; }
+      FORCE_INLINE static void disable_fsr_probe() { fsr_activation = false; fsr_ready = false; }
       FORCE_INLINE static bool fsrTriggered() {
-        bool fsr_triggered = fsr_activation && (fsr_bias_probe < fsr_threshold_ratio);
+        bool fsr_triggered = fsr_activation && fsr_ready && (fsr_bias_probe < fsr_threshold_ratio);
         return fsr_triggered;
       }
       FORCE_INLINE static void resetThreshold() {
         fsr_previous = current_fsr;
         fsr_bias = 0.0;
         fsr_bias_probe = 0.0;
+        fsr_ready = false;
+        fsr_sample_count = 0;
       }
     #endif
 
