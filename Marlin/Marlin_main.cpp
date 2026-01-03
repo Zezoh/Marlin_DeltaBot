@@ -2619,6 +2619,8 @@ void clean_up_after_endstop_or_probe_move() {
         endstops.enable_z_probe(true);
       #endif
       thermalManager.enable_fsr_probe();
+      safe_delay(20);
+      thermalManager.resetThreshold();
       const bool probe_failed = do_probe_move(z, fr_mm_s);
       thermalManager.disable_fsr_probe();
       return probe_failed;
