@@ -45,11 +45,11 @@
 #define Z_MIN_PIN          68
 
 #undef  FIL_RUNOUT_PIN
-#define FIL_RUNOUT_PIN     18
+#define FIL_RUNOUT_PIN     14
 
 #if ENABLED(ONE_BUTTON_ROTARY)
   #ifndef ONE_BUTTON_PIN
-    #define ONE_BUTTON_PIN        14
+    #define ONE_BUTTON_PIN        3
   #endif
   #ifndef ONE_BUTTON_ROTARY_PIN_A
     #define ONE_BUTTON_ROTARY_PIN_A 52

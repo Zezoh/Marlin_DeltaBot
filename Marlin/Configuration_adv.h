@@ -929,7 +929,7 @@
  * Note: When S_CURVE_ACCELERATION is enabled, the shaper is skipped and the
  * original S-curve profile is used.
  */
-#define DELTA_INPUT_SHAPER
+//#define DELTA_INPUT_SHAPER
 #if ENABLED(DELTA_INPUT_SHAPER)
   // Fixed update rate for the shaper (Hz). Keep within 1-4 kHz.
   #define INPUT_SHAPER_HZ 2000

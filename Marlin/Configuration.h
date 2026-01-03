@@ -50,7 +50,7 @@
 
 #define ONE_BUTTON
 #define ONE_BUTTON_INVERTING true
-#define ONE_BUTTON_ROTARY  // Use a dedicated KY-040 rotary on the default RAMPS 1.4 pins
+//#define ONE_BUTTON_ROTARY  // Use a dedicated KY-040 rotary on the default RAMPS 1.4 pins
 #define ONE_BUTTON_ROTARY_DEBOUNCE 2   // Minimum milliseconds between rotary state changes
 #define STEPS_PER_ROTATION 0.025f      // Z move per rotary tick (mm)
 
@@ -1106,7 +1106,7 @@
 #define FILAMENT_RUNOUT_SENSOR
 #if ENABLED(FILAMENT_RUNOUT_SENSOR)
   #define NUM_RUNOUT_SENSORS   1     // Number of sensors, up to one per extruder. Define a FIL_RUNOUT#_PIN for each.
-  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+  #define FIL_RUNOUT_INVERTING true // set to true to invert the logic of the sensor.
   #define FIL_RUNOUT_PULLUP          // Use internal pullup for filament runout pins.
   #define FILAMENT_RUNOUT_SCRIPT "M600"
 #endif
