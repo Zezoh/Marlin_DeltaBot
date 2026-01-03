@@ -884,7 +884,7 @@ extern "C" {
 
 #if ENABLED(FILAMENT_AUTOLOAD) // only support single sensor applying to all extruders
 
-  #define FILAMENT_PRESENT runout.filament_present_debounced()
+  #define FILAMENT_PRESENT runout.filament_present()
 
   inline void clear_wait_for_filament() {
     if (printer_states.activity_state == ACTIVITY_CHANGING_FILAMENT
