@@ -518,6 +518,10 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
   #endif
 #endif
 
+#if ENABLED(FILAMENT_AUTOLOAD) && DISABLED(FILAMENT_RUNOUT_SENSOR)
+  #error "FILAMENT_AUTOLOAD requires FILAMENT_RUNOUT_SENSOR."
+#endif
+
 /**
  * Advanced Pause
  */
