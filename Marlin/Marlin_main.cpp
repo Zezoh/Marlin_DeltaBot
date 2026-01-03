@@ -15423,9 +15423,9 @@ static millis_t duration_in_millis = 1000;
   static millis_t buttonTimer = 0;
   static millis_t pressDuration = 0;          // stores the duration (in milliseconds) that the button was pressed/held down for
   static millis_t debounceThreshold = 50;      // the threshold (in milliseconds) for a button press to be confirmed (i.e. not "noise")
-  static millis_t lastPressTime = 0;           // stores the time of the last button press
   static millis_t doubleClickThreshold = 500;  // the threshold (in milliseconds) for detecting a double click
   static millis_t shortPressConfirm_ms = 0;    // earliest time a pending short press should execute
+  static millis_t lastReleaseTime = 0;         // stores the time of the last button release
 
   inline void finalize_short_press_if_ready() {
     const millis_t now = millis();
@@ -15441,36 +15441,45 @@ static millis_t duration_in_millis = 1000;
     const bool pressed = ONE_BUTTON_PRESSED;
     const millis_t now = millis();
 
-  // Detect a new press and capture start time
-  if (pressed && !buttonActive) {
-    buttonActive = true;
-    buttonTimer = now;
-    pressDuration = 0;
-  }
-
-  if (pressed && buttonActive) {
-    pressDuration = now - buttonTimer;
-
-    // Long press detected once per hold
-    if (!longPressActive && pressDuration >= duration_in_millis) {
-      longPressActive = true;
-      longPress = true;
+    // Detect a new press and capture start time
+    if (pressed && !buttonActive) {
+      buttonActive = true;
+      longPressActive = false;
+      buttonTimer = now;
+      pressDuration = 0;
     }
-    
-    pressDuration = millis() - buttonTimer;
+
+    if (pressed && buttonActive) {
+      pressDuration = now - buttonTimer;
+
+      // Long press detected once per hold
+      if (!longPressActive && pressDuration >= duration_in_millis) {
+        longPressActive = true;
+        longPress = true;
+        shortPressPending = false;
+      }
+      return;
+    }
+
+    // Handle release
+    if (!pressed && buttonActive) {
+      buttonActive = false;
+      pressDuration = now - buttonTimer;
 
       if (longPressActive) {
         longPressActive = false;
-      } else if (pressDuration > debounceThreshold) {
-        if (now - lastPressTime <= doubleClickThreshold) {
+        return;
+      }
+
+      if (!longPressActive && pressDuration > debounceThreshold) {
+        if (shortPressPending && !ELAPSED(now, lastReleaseTime + doubleClickThreshold)) {
           doubleClick = true;
           shortPressPending = false;
-        }
-        else {
+        } else {
           shortPressPending = true;
           shortPressConfirm_ms = now + doubleClickThreshold;
         }
-        lastPressTime = now;
+        lastReleaseTime = now;
       }
     }
   }
