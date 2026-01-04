@@ -827,6 +827,13 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
 #if HAS_BED_PROBE
 
   /**
+   * FSR probe requires a fixed mount
+   */
+  #if ENABLED(FSR_SENSOR) && DISABLED(FIX_MOUNTED_PROBE)
+    #error "FSR_SENSOR requires FIX_MOUNTED_PROBE."
+  #endif
+
+  /**
    * Z_PROBE_SLED is incompatible with DELTA
    */
   #if ENABLED(Z_PROBE_SLED) && ENABLED(DELTA)
