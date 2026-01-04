@@ -312,18 +312,6 @@
 /**
  * Delta input shaping sanity checks
  */
-#if ENABLED(DELTA_INPUT_SHAPER)
-  #if DISABLED(DELTA)
-    #error "DELTA_INPUT_SHAPER requires DELTA kinematics."
-  #endif
-  #if INPUT_SHAPER_HZ < 1
-    #error "INPUT_SHAPER_HZ must be 1 or higher."
-  #endif
-  #if INPUT_SHAPER_MAX_DELAY_SAMPLES < 1
-    #error "INPUT_SHAPER_MAX_DELAY_SAMPLES must be 1 or higher."
-  #endif
-#endif
-
 #define BOARD_MKS_13     -47
 #define BOARD_TRIGORILLA -343
 #if MB(MKS_13)
