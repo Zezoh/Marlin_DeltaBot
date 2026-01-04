@@ -1628,11 +1628,7 @@ uint32_t Stepper::stepper_block_phase_isr() {
           #else
             // Using the old trapezoidal control
             step_rate = STEP_MULTIPLY(deceleration_time, current_block->acceleration_rate);
-<<<<<<< codex/implement-input-shaping-for-delta-printer-b1vxky
-            if (step_rate < acc_step_rate) { // Still decelerating?
-=======
             if (step_rate < acc_step_rate) {
->>>>>>> codex/revise-fsr-z-probe-functionality
               step_rate = acc_step_rate - step_rate;
               NOLESS(step_rate, current_block->final_rate);
             }
@@ -1674,6 +1670,10 @@ uint32_t Stepper::stepper_block_phase_isr() {
           if (ticks_nominal < 0) {
             // step_rate to timer interval and loops for the nominal speed
             ticks_nominal = calc_timer_interval(current_block->nominal_rate, oversampling_factor, &steps_per_isr);
+            #if DISABLED(S_CURVE_ACCELERATION)
+              acc_step_rate = current_block->nominal_rate;
+            #endif
+            deceleration_time = ticks_nominal / 2;
           }
 
           // The timer interval is just the nominal value for the nominal speed

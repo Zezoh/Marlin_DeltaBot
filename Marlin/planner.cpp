@@ -701,14 +701,20 @@ void Planner::init() {
  * NOT BUSY and it is marked as RECALCULATE. That WARRANTIES the Stepper ISR
  * is not and will not use the block while we modify it.
  */
-void Planner::calculate_trapezoid_for_block(block_t* const block, const float &entry_factor, const float &exit_factor) {
+void Planner::calculate_trapezoid_for_block(block_t* const block, const float &entry_speed, const float &exit_speed) {
 
-  uint32_t initial_rate = CEIL(block->nominal_rate * entry_factor),
-           final_rate = CEIL(block->nominal_rate * exit_factor); // (steps per second)
+  const float spmm = block->steps_per_mm;
+  uint32_t initial_rate = entry_speed ? LROUND(entry_speed * spmm) : block->initial_rate,
+           final_rate = LROUND(exit_speed * spmm); // (steps per second)
 
-  // Limit minimal step rate (Otherwise the timer will overflow.)
-  NOLESS(initial_rate, uint32_t(MINIMAL_STEP_RATE));
-  NOLESS(final_rate, uint32_t(MINIMAL_STEP_RATE));
+  // Removing code to constrain values produces judder in direction-switching moves because the
+  // current discrete stepping math diverges from physical motion under constant acceleration
+  // when acceleration_steps_per_s2 is large compared to initial/final_rate.
+  NOLESS(initial_rate,        long(stepper.minimal_step_rate));
+  NOLESS(final_rate,          long(stepper.minimal_step_rate));
+  NOLESS(block->nominal_rate, long(stepper.minimal_step_rate));
+  NOMORE(initial_rate,        block->nominal_rate);  // NOTE: The nominal rate may be less than the minimal step rate!
+  NOMORE(final_rate,          block->nominal_rate);
 
   #if ENABLED(S_CURVE_ACCELERATION) || ENABLED(LIN_ADVANCE)
     uint32_t cruise_rate = block->nominal_rate;
@@ -927,30 +933,41 @@ void Planner::recalculate_trapezoids() {
     next = &block_buffer[block_index];
 
     if (!TEST(next->flag, BLOCK_BIT_SYNC_POSITION)) {
-      next_entry_speed = SQRT(next->entry_speed_sqr);
+      // Check if the next block's entry speed changed
+      if (TEST(next->flag, BLOCK_BIT_RECALCULATE)) {
+        if (!block) {
+          // 'next' is the first move due to either being the first added move or due to the planner
+          // having completely fallen behind. Revert any reverse pass change.
+          next->entry_speed_sqr = next->min_entry_speed_sqr;
+          next_entry_speed = SQRT(next->min_entry_speed_sqr);
+        }
+        else {
+          // Try to fix exit speed which requires trapezoid recalculation
+          SBI(block->flag, BLOCK_BIT_RECALCULATE);
 
-      if (current) {
-        // Recalculate if current block entry or exit junction speed has changed.
-        if (TEST(current->flag, BLOCK_BIT_RECALCULATE) || TEST(next->flag, BLOCK_BIT_RECALCULATE)) {
+          // But there is an inherent race condition here, as the block may have
+          // become BUSY just before being marked RECALCULATE, so check for that!
+          if (stepper.is_block_busy(block)) {
+            // Block is BUSY so we can't change the exit speed. Revert any reverse pass change.
+            next->entry_speed_sqr = next->min_entry_speed_sqr;
+            if (!next->initial_rate) {
+              // 'next' was never calculated. Planner is falling behind so for maximum efficiency
+              // set next's stepping speed directly and forgo checking against min_entry_speed_sqr.
+              // calculate_trapezoid_for_block() can handle it, albeit sub-optimally.
+              next->initial_rate = block->final_rate;
+            }
+            // Note that at this point next_entry_speed is (still) 0.
+          }
+          else {
+            // Block is not BUSY: we won the race against the ISR or recalculate was already set
 
-          // Mark the current block as RECALCULATE, to protect it from the Stepper ISR running it.
-          // Note that due to the above condition, there's a chance the current block isn't marked as
-          // RECALCULATE yet, but the next one is. That's the reason for the following line.
-          SBI(current->flag, BLOCK_BIT_RECALCULATE);
+            if (next->entry_speed_sqr != next->min_entry_speed_sqr)
+              forward_pass_kernel(block, next);
 
-          // But there is an inherent race condition here, as the block maybe
-          // became BUSY, just before it was marked as RECALCULATE, so check
-          // if that is the case!
-          if (!stepper.is_block_busy(current)) {
-            // Block is not BUSY, we won the race against the Stepper ISR:
+            current_entry_speed = next_entry_speed;
+            next_entry_speed = SQRT(next->entry_speed_sqr);
 
-            // NOTE: Entry and exit factors always > 0 by all previous logic operations.
-            const float current_nominal_speed = SQRT(current->nominal_speed_sqr),
-                        nomr = 1.0f / current_nominal_speed;
-            calculate_trapezoid_for_block(current, current_entry_speed * nomr, next_entry_speed * nomr);
-            #if ENABLED(LIN_ADVANCE)
-              UNUSED(current_nominal_speed);
-            #endif
+            calculate_trapezoid_for_block(block, current_entry_speed, next_entry_speed);
           }
 
           // Reset current only to ensure next trapezoid is computed - The
@@ -979,12 +996,8 @@ void Planner::recalculate_trapezoids() {
     if (!stepper.is_block_busy(next)) {
       // Block is not BUSY, we won the race against the Stepper ISR:
 
-      const float next_nominal_speed = SQRT(next->nominal_speed_sqr),
-                  nomr = 1.0f / next_nominal_speed;
-      calculate_trapezoid_for_block(next, next_entry_speed * nomr, float(MINIMUM_PLANNER_SPEED) * nomr);
-      #if ENABLED(LIN_ADVANCE)
-        UNUSED(next_nominal_speed);
-      #endif
+      const float min_exit_speed = SQRT(next->min_entry_speed_sqr);
+      calculate_trapezoid_for_block(next, next_entry_speed, min_exit_speed);
     }
 
     if (block)
