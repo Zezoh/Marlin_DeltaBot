@@ -16009,10 +16009,8 @@ void setup() {
   #endif
 	
   #if ENABLED(SDCARD_AUTOCHECK)
-    #if PIN_EXISTS(SD_DETECT)
-	  SET_INPUT_PULLUP(SD_DETECT_PIN);
-    #elif SDSS > -1
-	  SET_INPUT_PULLUP(SDSS);
+    #ifdef SD_AUTOCHECK_PIN
+      SET_INPUT_PULLUP(SD_AUTOCHECK_PIN);
     #endif
   #endif
   

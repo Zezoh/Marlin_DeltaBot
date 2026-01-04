@@ -212,18 +212,17 @@ private:
   #endif
 };
 
-#if PIN_EXISTS(SD_DETECT)
+#if ENABLED(SDCARD_AUTOCHECK) && (SDSS > -1)
+  #define SD_AUTOCHECK_PIN SDSS
+#elif PIN_EXISTS(SD_DETECT)
+  #define SD_AUTOCHECK_PIN SD_DETECT_PIN
+#endif
+
+#ifdef SD_AUTOCHECK_PIN
   #if ENABLED(SD_DETECT_INVERTED)
-    #define IS_SD_INSERTED()  READ(SD_DETECT_PIN)
+    #define IS_SD_INSERTED()  READ(SD_AUTOCHECK_PIN)
   #else
-    #define IS_SD_INSERTED() !READ(SD_DETECT_PIN)
-  #endif
-#elif ENABLED(SDCARD_AUTOCHECK) && (SDSS > -1)
-  // Fall back to the SD module CS pin when no SD detect pin is available.
-  #if ENABLED(SD_DETECT_INVERTED)
-    #define IS_SD_INSERTED()  READ(SDSS)
-  #else
-    #define IS_SD_INSERTED() !READ(SDSS)
+    #define IS_SD_INSERTED() !READ(SD_AUTOCHECK_PIN)
   #endif
 #else
   // No card detect line? Assume the card is inserted.
