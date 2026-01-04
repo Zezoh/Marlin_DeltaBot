@@ -309,9 +309,6 @@
   #error "MAX7219_DEBUG_STEPPER_QUEUE is now MAX7219_DEBUG_PLANNER_QUEUE. Please update your configuration."
 #endif
 
-/**
- * Delta input shaping sanity checks
- */
 #define BOARD_MKS_13     -47
 #define BOARD_TRIGORILLA -343
 #if MB(MKS_13)
