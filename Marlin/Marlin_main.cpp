@@ -15494,11 +15494,19 @@ inline void line_to_z(const float &z) {
 }
 
 #if DISABLED(SDCARD_AUTOCHECK)
-  inline void one_button_check_sd_content() {
+  inline void check_sd_content_once() {
     if (!card.cardOK)
       card.initsd();
-    if (card.cardOK && !card.isFileOpen())
-      enqueue_and_echo_commands_P(PSTR("M23 dagoma0.g"));
+    if (card.cardOK && !card.isFileOpen()) {
+      char filename[] = "dagoma0.g";
+      card.openFile(filename, true, false, false);
+      if (!card.isFileOpen())
+        SERIAL_ECHOLNPGM(PSTR("No file selected. Please upload file to SD."));
+    }
+  }
+
+  inline void one_button_check_sd_content() {
+    check_sd_content_once();
   }
 #endif
 
@@ -16275,6 +16283,10 @@ void setup() {
     enable_B();
     enable_C();
     enable_D();
+  #endif
+
+  #if ENABLED(SDSUPPORT) && DISABLED(SDCARD_AUTOCHECK)
+    check_sd_content_once();
   #endif
 
   #if ENABLED(SDSUPPORT) && !(ENABLED(ULTRA_LCD) && PIN_EXISTS(SD_DETECT)) && DISABLED(ONE_BUTTON)
