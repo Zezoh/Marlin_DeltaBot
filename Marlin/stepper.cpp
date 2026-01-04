@@ -1519,12 +1519,22 @@ void Stepper::stepper_pulse_phase_isr() {
       return current_block ? current_block->initial_rate : 0;
 
     shaper_tick_accum += elapsed_ticks;
+    const uint32_t ticks_to_process = shaper_tick_interval ? (shaper_tick_accum / shaper_tick_interval) : 0;
+    if (!ticks_to_process)
+      return (uint32_t)shaper_step_rate;
 
-    while (shaper_tick_accum >= shaper_tick_interval) {
-      shaper_tick_accum -= shaper_tick_interval;
+    shaper_tick_accum -= ticks_to_process * shaper_tick_interval;
+
+    int32_t step_rate = shaper_step_rate;
+    int32_t step_rate_rem = shaper_step_rate_rem;
+    const int32_t accel_mag = (int32_t)current_block->acceleration_steps_per_s2;
+    const int32_t min_rate = (accel_sign < 0) ? (int32_t)current_block->final_rate : 0;
+    const int32_t max_rate = (int32_t)current_block->nominal_rate;
+    const int32_t start_rate = (int32_t)current_block->initial_rate;
+
+    for (uint32_t tick = 0; tick < ticks_to_process; ++tick) {
 
       int64_t dot = 0;
-      const int32_t accel_mag = (int32_t)current_block->acceleration_steps_per_s2;
 
       for (uint8_t i = 0; i < 3; ++i) {
         const int32_t accel_axis = (int32_t)(((int64_t)accel_mag * tower_ratio_q15[i]) >> 15);
@@ -1540,24 +1550,41 @@ void Stepper::stepper_pulse_phase_isr() {
       NOMORE(accel_scalar, accel_mag);
       NOLESS(accel_scalar, -accel_mag);
 
-      const int64_t accel_delta = (int64_t)accel_scalar * shaper_tick_us + shaper_step_rate_rem;
-      const int32_t delta_steps = (int32_t)(accel_delta / 1000000L);
-      shaper_step_rate += delta_steps;
-      shaper_step_rate_rem = (int32_t)(accel_delta - (int64_t)delta_steps * 1000000L);
+      int64_t rate_accum = (int64_t)step_rate * 1000000L + step_rate_rem;
+      rate_accum += (int64_t)accel_scalar * shaper_tick_us;
 
-      if (accel_sign < 0)
-        NOLESS(shaper_step_rate, (int32_t)current_block->final_rate);
-      else if (accel_sign > 0)
-        NOLESS(shaper_step_rate, (int32_t)current_block->initial_rate);
+      const int64_t max_rate_accum = (int64_t)max_rate * 1000000L;
+      if (rate_accum > max_rate_accum) {
+        rate_accum = max_rate_accum;
+        step_rate_rem = 0;
+      }
 
-      if (shaper_step_rate < 0) shaper_step_rate = 0;
-      NOMORE(shaper_step_rate, (int32_t)current_block->nominal_rate);
-      if ((accel_sign > 0 && shaper_step_rate == (int32_t)current_block->nominal_rate)
-          || (accel_sign < 0 && shaper_step_rate == (int32_t)current_block->final_rate))
-        shaper_step_rate_rem = 0;
+      if (accel_sign < 0) {
+        const int64_t min_rate_accum = (int64_t)min_rate * 1000000L;
+        if (rate_accum < min_rate_accum) {
+          rate_accum = min_rate_accum;
+          step_rate_rem = 0;
+        }
+      }
+      else if (accel_sign > 0) {
+        const int64_t start_rate_accum = (int64_t)start_rate * 1000000L;
+        if (rate_accum < start_rate_accum) {
+          rate_accum = start_rate_accum;
+          step_rate_rem = 0;
+        }
+      }
+      else if (rate_accum < 0) {
+        rate_accum = 0;
+        step_rate_rem = 0;
+      }
+
+      step_rate = (int32_t)(rate_accum / 1000000L);
+      step_rate_rem = (int32_t)(rate_accum - (int64_t)step_rate * 1000000L);
     }
 
-    return (uint32_t)shaper_step_rate;
+    shaper_step_rate = step_rate;
+    shaper_step_rate_rem = step_rate_rem;
+    return (uint32_t)step_rate;
   }
 #endif
 
