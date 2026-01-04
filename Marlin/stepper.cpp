@@ -179,6 +179,7 @@ uint32_t Stepper::nextMainISR = 0;
   uint32_t Stepper::shaper_tick_interval = 0;
   uint32_t Stepper::shaper_tick_us = 0;
   int32_t Stepper::shaper_step_rate = 0;
+  int32_t Stepper::shaper_step_rate_rem = 0;
   uint32_t Stepper::shaper_last_interval = 0;
   float Stepper::shaper_freq_hz[3] = { 0, 0, 0 };
   float Stepper::shaper_damping = 0.0f;
@@ -1517,13 +1518,13 @@ void Stepper::stepper_pulse_phase_isr() {
       return current_block ? current_block->initial_rate : 0;
 
     shaper_tick_accum += elapsed_ticks;
+    if (shaper_tick_accum < shaper_tick_interval)
+      return (uint32_t)shaper_step_rate;
 
-    while (shaper_tick_accum >= shaper_tick_interval) {
-      shaper_tick_accum -= shaper_tick_interval;
+    shaper_tick_accum %= shaper_tick_interval;
+    const int32_t accel_mag = (int32_t)current_block->acceleration_steps_per_s2;
 
       int64_t dot = 0;
-      const int32_t accel_mag = (int32_t)current_block->acceleration_steps_per_s2;
-
       for (uint8_t i = 0; i < 3; ++i) {
         const int32_t accel_axis = (int32_t)(((int64_t)accel_mag * tower_ratio_q15[i]) >> 15);
         const int32_t command = accel_sign ? accel_axis * accel_sign : 0;
@@ -1538,16 +1539,21 @@ void Stepper::stepper_pulse_phase_isr() {
       NOMORE(accel_scalar, accel_mag);
       NOLESS(accel_scalar, -accel_mag);
 
-      shaper_step_rate += (int32_t)(((int64_t)accel_scalar * shaper_tick_us) / 1000000L);
-
-      if (shaper_step_rate < 0) shaper_step_rate = 0;
-      NOMORE(shaper_step_rate, (int32_t)current_block->nominal_rate);
+      const int64_t accel_delta = (int64_t)accel_scalar * shaper_tick_us + shaper_step_rate_rem;
+      const int32_t delta_steps = (int32_t)(accel_delta / 1000000L);
+      shaper_step_rate += delta_steps;
+      shaper_step_rate_rem = (int32_t)(accel_delta - (int64_t)delta_steps * 1000000L);
 
       if (accel_sign < 0)
         NOLESS(shaper_step_rate, (int32_t)current_block->final_rate);
       else if (accel_sign > 0)
         NOLESS(shaper_step_rate, (int32_t)current_block->initial_rate);
-    }
+
+      if (shaper_step_rate < 0) shaper_step_rate = 0;
+      NOMORE(shaper_step_rate, (int32_t)current_block->nominal_rate);
+      if ((accel_sign > 0 && shaper_step_rate == (int32_t)current_block->nominal_rate)
+          || (accel_sign < 0 && shaper_step_rate == (int32_t)current_block->final_rate))
+        shaper_step_rate_rem = 0;
 
     return (uint32_t)shaper_step_rate;
   }
@@ -1825,6 +1831,7 @@ uint32_t Stepper::stepper_block_phase_isr() {
           tower_ratio_denom_q30 += (int64_t)tower_ratio_q15[i] * tower_ratio_q15[i];
 
         shaper_step_rate = current_block->initial_rate;
+        shaper_step_rate_rem = 0;
         shaper_tick_accum = 0;
         shaper_last_interval = shaper_tick_interval;
       #endif
