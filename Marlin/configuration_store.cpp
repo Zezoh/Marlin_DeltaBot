@@ -269,13 +269,6 @@ typedef struct SettingsDataStruct {
   float planner_extruder_advance_K;                     // M900 K    planner.extruder_advance_K
 
   //
-  // DELTA_INPUT_SHAPER
-  //
-  float input_shaper_freq_hz[3];                        // M593 A/B/C
-  float input_shaper_damping;                           // M593 D
-  uint16_t input_shaper_hz;                             // M593 H
-
-  //
   // HAS_MOTOR_CURRENT_PWM
   //
   uint32_t motor_current_setting[XYZ];                  // M907 X Z E
@@ -952,27 +945,6 @@ void MarlinSettings::postprocess() {
       EEPROM_WRITE(dummy);
     #endif
 
-    //
-    // Delta Input Shaper
-    //
-
-    _FIELD_TEST(input_shaper_freq_hz);
-    #if ENABLED(DELTA_INPUT_SHAPER)
-      float shaper_freq[3], shaper_damping;
-      uint16_t shaper_hz;
-      Stepper::get_input_shaper(shaper_freq[0], shaper_freq[1], shaper_freq[2], shaper_damping, shaper_hz);
-      EEPROM_WRITE(shaper_freq);
-      EEPROM_WRITE(shaper_damping);
-      EEPROM_WRITE(shaper_hz);
-    #else
-      dummy = 0;
-      const float dummy_shaper_freq[3] = { 0, 0, 0 };
-      const uint16_t dummy_shaper_hz = 0;
-      EEPROM_WRITE(dummy_shaper_freq);
-      EEPROM_WRITE(dummy);
-      EEPROM_WRITE(dummy_shaper_hz);
-    #endif
-
     _FIELD_TEST(motor_current_setting);
 
     #if HAS_MOTOR_CURRENT_PWM
@@ -1599,27 +1571,6 @@ void MarlinSettings::postprocess() {
       #endif
 
       //
-      // Delta Input Shaper
-      //
-
-      _FIELD_TEST(input_shaper_freq_hz);
-      #if ENABLED(DELTA_INPUT_SHAPER)
-        float shaper_freq[3], shaper_damping;
-        uint16_t shaper_hz;
-        EEPROM_READ(shaper_freq);
-        EEPROM_READ(shaper_damping);
-        EEPROM_READ(shaper_hz);
-        if (shaper_hz == 0) shaper_hz = INPUT_SHAPER_HZ;
-        if (!validating) Stepper::set_input_shaper(shaper_freq[0], shaper_freq[1], shaper_freq[2], shaper_damping, shaper_hz);
-      #else
-        float dummy_shaper_freq[3];
-        uint16_t dummy_shaper_hz;
-        EEPROM_READ(dummy_shaper_freq);
-        EEPROM_READ(dummy);
-        EEPROM_READ(dummy_shaper_hz);
-      #endif
-
-      //
       // Motor Current PWM
       //
 
@@ -2071,10 +2022,6 @@ void MarlinSettings::reset() {
 
   #if ENABLED(LIN_ADVANCE)
     planner.extruder_advance_K = LIN_ADVANCE_K;
-  #endif
-
-  #if ENABLED(DELTA_INPUT_SHAPER)
-    Stepper::set_input_shaper(INPUT_SHAPER_FREQ_A, INPUT_SHAPER_FREQ_B, INPUT_SHAPER_FREQ_C, INPUT_SHAPER_DAMPING, INPUT_SHAPER_HZ);
   #endif
 
   #if HAS_MOTOR_CURRENT_PWM
@@ -2862,27 +2809,6 @@ void MarlinSettings::reset() {
       }
       CONFIG_ECHO_START;
       SERIAL_ECHOLNPAIR("  M900 K", planner.extruder_advance_K);
-    #endif
-
-    #if ENABLED(DELTA_INPUT_SHAPER)
-      if (!forReplay) {
-        CONFIG_ECHO_START;
-        SERIAL_ECHOLNPGM("Delta Input Shaper:");
-      }
-      float shaper_freq[3], shaper_damping;
-      uint16_t shaper_hz;
-      Stepper::get_input_shaper(shaper_freq[0], shaper_freq[1], shaper_freq[2], shaper_damping, shaper_hz);
-      CONFIG_ECHO_START;
-      SERIAL_ECHOPGM("  M593 A");
-      SERIAL_ECHO_F(shaper_freq[0], 2);
-      SERIAL_ECHOPGM(" B");
-      SERIAL_ECHO_F(shaper_freq[1], 2);
-      SERIAL_ECHOPGM(" C");
-      SERIAL_ECHO_F(shaper_freq[2], 2);
-      SERIAL_ECHOPGM(" D");
-      SERIAL_ECHO_F(shaper_damping, 3);
-      SERIAL_ECHOPAIR(" H", shaper_hz);
-      SERIAL_EOL();
     #endif
 
     #if HAS_MOTOR_CURRENT_PWM

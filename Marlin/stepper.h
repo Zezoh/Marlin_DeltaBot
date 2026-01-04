@@ -191,7 +191,6 @@
 //
 
 #include "planner.h"
-#include "input_shaper.h"
 #include "speed_lookuptable.h"
 #include "stepper_indirection.h"
 #include "language.h"
@@ -306,20 +305,6 @@ class Stepper {
     #endif
 
     static uint32_t nextMainISR;   // time remaining for the next Step ISR
-    #if ENABLED(DELTA_INPUT_SHAPER)
-      static uint32_t input_shaper_step_rate(const uint32_t elapsed_ticks, const int8_t accel_sign);
-      static InputShaperFIR tower_shaper[3];
-      static int32_t tower_ratio_q15[3];
-      static int64_t tower_ratio_denom_q30;
-      static uint32_t shaper_tick_accum;
-      static uint32_t shaper_tick_interval;
-      static uint32_t shaper_tick_us;
-      static int32_t shaper_step_rate;
-      static uint32_t shaper_last_interval;
-      static float shaper_freq_hz[3];
-      static float shaper_damping;
-      static uint16_t shaper_hz;
-    #endif
     #if ENABLED(LIN_ADVANCE)
       static uint32_t nextAdvanceISR, LA_isr_rate;
       static uint16_t LA_current_adv_steps, LA_final_adv_steps, LA_max_adv_steps; // Copy from current executed block. Needed because current_block is set to NULL "too early".
@@ -364,12 +349,6 @@ class Stepper {
 
     // The stepper block processing phase ISR
     static uint32_t stepper_block_phase_isr();
-
-    #if ENABLED(DELTA_INPUT_SHAPER)
-      static void set_input_shaper(const float freq_a, const float freq_b, const float freq_c, const float damping, const uint16_t sample_hz);
-      static void get_input_shaper(float &freq_a, float &freq_b, float &freq_c, float &damping, uint16_t &sample_hz);
-      static void report_input_shaper();
-    #endif
 
     #if ENABLED(LIN_ADVANCE)
       // The Linear advance stepper ISR
