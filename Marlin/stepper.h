@@ -311,6 +311,7 @@ class Stepper {
       static InputShaperFIR tower_shaper[3];
       static int32_t tower_ratio_q15[3];
       static int64_t tower_ratio_denom_q30;
+      static int32_t tower_ratio_denom_inv_q31;
       static uint32_t shaper_tick_accum;
       static uint32_t shaper_tick_interval;
       static uint32_t shaper_tick_us;

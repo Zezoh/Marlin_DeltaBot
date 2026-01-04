@@ -175,6 +175,7 @@ uint32_t Stepper::nextMainISR = 0;
   InputShaperFIR Stepper::tower_shaper[3];
   int32_t Stepper::tower_ratio_q15[3];
   int64_t Stepper::tower_ratio_denom_q30 = 0;
+  int32_t Stepper::tower_ratio_denom_inv_q31 = 0;
   uint32_t Stepper::shaper_tick_accum = 0;
   uint32_t Stepper::shaper_tick_interval = 0;
   uint32_t Stepper::shaper_tick_us = 0;
@@ -1534,7 +1535,7 @@ void Stepper::stepper_pulse_phase_isr() {
 
       int32_t accel_scalar = 0;
       if (tower_ratio_denom_q30 > 0)
-        accel_scalar = (int32_t)((dot << 15) / tower_ratio_denom_q30);
+        accel_scalar = (int32_t)((dot * (int64_t)tower_ratio_denom_inv_q31) >> 16);
 
       NOMORE(accel_scalar, accel_mag);
       NOLESS(accel_scalar, -accel_mag);
@@ -1830,6 +1831,9 @@ uint32_t Stepper::stepper_block_phase_isr() {
         tower_ratio_denom_q30 = 0;
         for (uint8_t i = 0; i < 3; ++i)
           tower_ratio_denom_q30 += (int64_t)tower_ratio_q15[i] * tower_ratio_q15[i];
+        tower_ratio_denom_inv_q31 = tower_ratio_denom_q30
+          ? (int32_t)((1LL << 31) / tower_ratio_denom_q30)
+          : 0;
 
         shaper_step_rate = current_block->initial_rate;
         shaper_step_rate_rem = 0;
