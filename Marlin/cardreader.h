@@ -43,7 +43,7 @@ public:
   void beginautostart();
   void checkautostart();
 
-  void openFile(char * const path, const bool read, const bool subcall=false);
+  void openFile(char * const path, const bool read, const bool subcall=false, const bool report_errors=true);
   void openLogFile(char * const path);
   void removeFile(const char * const name);
   void closefile(const bool store_location=false);

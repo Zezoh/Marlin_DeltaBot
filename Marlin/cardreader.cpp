@@ -304,8 +304,15 @@ void CardReader::checkSDCard() {
 
   if (inserted) {
     beginautostart(); // Initial boot
+    if (!cardOK)
+      initsd();
     if (cardOK) {
-      enqueue_and_echo_commands_P(PSTR("M23 dagoma0.g"));
+      if (!isFileOpen()) {
+        char filename[] = "dagoma0.g";
+        openFile(filename, true, false, false);
+        if (!isFileOpen())
+          SERIAL_ECHOLNPGM(PSTR("No file selected. Please upload file to SD."));
+      }
       SERIAL_ECHOLNPGM(MSG_SD_INSERTED);
     }
     return;
@@ -391,7 +398,7 @@ void CardReader::getAbsFilename(char *t) {
   *t = '\0';
 }
 
-void CardReader::openFile(char * const path, const bool read, const bool subcall/*=false*/) {
+void CardReader::openFile(char * const path, const bool read, const bool subcall/*=false*/, const bool report_errors/*=true*/) {
 
   if (!cardOK) return;
 
@@ -455,7 +462,7 @@ void CardReader::openFile(char * const path, const bool read, const bool subcall
       //  SERIAL_PROTOCOLPAIR(MSG_SD_FILE_LONG_NAME, longFilename);
       //}
     }
-    else {
+    else if (report_errors) {
       SERIAL_PROTOCOLPAIR(MSG_SD_OPEN_FILE_FAIL, fname);
       SERIAL_PROTOCOLCHAR('.');
       SERIAL_EOL();
@@ -972,7 +979,8 @@ void CardReader::printingHasFinished() {
     millis_t current_ms = millis();
     if (auto_report_sd_interval && ELAPSED(current_ms, next_sd_report_ms)) {
       next_sd_report_ms = current_ms + 1000UL * auto_report_sd_interval;
-      getStatus();
+      if (sdprinting)
+        getStatus();
     }
   }
 #endif // AUTO_REPORT_SD_STATUS
