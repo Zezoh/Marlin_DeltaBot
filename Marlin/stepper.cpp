@@ -1524,36 +1524,33 @@ void Stepper::stepper_pulse_phase_isr() {
     shaper_tick_accum %= shaper_tick_interval;
     const int32_t accel_mag = (int32_t)current_block->acceleration_steps_per_s2;
 
-      int64_t dot = 0;
-      for (uint8_t i = 0; i < 3; ++i) {
-        const int32_t accel_axis = (int32_t)(((int64_t)accel_mag * tower_ratio_q15[i]) >> 15);
-        const int32_t command = accel_sign ? accel_axis * accel_sign : 0;
-        const int32_t shaped = tower_shaper[i].process(command);
-        dot += (int64_t)shaped * tower_ratio_q15[i];
-      }
+    int64_t dot = 0;
+    for (uint8_t i = 0; i < 3; ++i) {
+      const int32_t accel_axis = (int32_t)(((int64_t)accel_mag * tower_ratio_q15[i]) >> 15);
+      const int32_t command = accel_sign ? accel_axis * accel_sign : 0;
+      const int32_t shaped = tower_shaper[i].process(command);
+      dot += (int64_t)shaped * tower_ratio_q15[i];
+    }
 
-      int32_t accel_scalar = 0;
-      if (tower_ratio_denom_q30 > 0)
-        accel_scalar = (int32_t)((dot << 15) / tower_ratio_denom_q30);
+    int32_t accel_scalar = (int32_t)((dot << 15) / tower_ratio_denom_q30);
+    NOMORE(accel_scalar, accel_mag);
+    NOLESS(accel_scalar, -accel_mag);
 
-      NOMORE(accel_scalar, accel_mag);
-      NOLESS(accel_scalar, -accel_mag);
+    const int64_t accel_delta = (int64_t)accel_scalar * shaper_tick_us + shaper_step_rate_rem;
+    const int32_t delta_steps = (int32_t)(accel_delta / 1000000L);
+    shaper_step_rate += delta_steps;
+    shaper_step_rate_rem = (int32_t)(accel_delta - (int64_t)delta_steps * 1000000L);
 
-      const int64_t accel_delta = (int64_t)accel_scalar * shaper_tick_us + shaper_step_rate_rem;
-      const int32_t delta_steps = (int32_t)(accel_delta / 1000000L);
-      shaper_step_rate += delta_steps;
-      shaper_step_rate_rem = (int32_t)(accel_delta - (int64_t)delta_steps * 1000000L);
+    if (accel_sign < 0)
+      NOLESS(shaper_step_rate, (int32_t)current_block->final_rate);
+    else if (accel_sign > 0)
+      NOLESS(shaper_step_rate, (int32_t)current_block->initial_rate);
 
-      if (accel_sign < 0)
-        NOLESS(shaper_step_rate, (int32_t)current_block->final_rate);
-      else if (accel_sign > 0)
-        NOLESS(shaper_step_rate, (int32_t)current_block->initial_rate);
-
-      if (shaper_step_rate < 0) shaper_step_rate = 0;
-      NOMORE(shaper_step_rate, (int32_t)current_block->nominal_rate);
-      if ((accel_sign > 0 && shaper_step_rate == (int32_t)current_block->nominal_rate)
-          || (accel_sign < 0 && shaper_step_rate == (int32_t)current_block->final_rate))
-        shaper_step_rate_rem = 0;
+    if (shaper_step_rate < 0) shaper_step_rate = 0;
+    NOMORE(shaper_step_rate, (int32_t)current_block->nominal_rate);
+    if ((accel_sign > 0 && shaper_step_rate == (int32_t)current_block->nominal_rate)
+        || (accel_sign < 0 && shaper_step_rate == (int32_t)current_block->final_rate))
+      shaper_step_rate_rem = 0;
 
     return (uint32_t)shaper_step_rate;
   }

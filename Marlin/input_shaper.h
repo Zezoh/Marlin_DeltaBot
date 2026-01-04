@@ -14,15 +14,11 @@
   #endif
 
   /**
-   * Fixed-point FIR shaper for tower-space acceleration shaping.
+   * Minimal fixed-point FIR shaper for tower-space acceleration shaping.
    *
    * - Weights are Q1.15 (sum = 1.0).
    * - Delays are integer samples at a fixed update rate.
    * - Acceleration values are steps/s^2 in int32.
-   *
-   * This shaper is applied after delta kinematics (tower space) and
-   * before velocity integration to suppress tower resonances without
-   * distorting Cartesian motion.
    */
   struct InputShaperFIR {
     uint8_t tap_count;

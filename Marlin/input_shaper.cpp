@@ -70,28 +70,10 @@ int32_t InputShaperFIR::process(const int32_t accel) {
   if (write_index >= ring_size) write_index = 0;
 
   int64_t acc = 0;
-  switch (tap_count) {
-    default: {
-      for (uint8_t i = 0; i < tap_count; ++i) {
-        int32_t index = (int32_t)write_index - 1 - (int32_t)delays[i];
-        if (index < 0) index += ring_size;
-        acc += (int64_t)weights_q15[i] * ring[index];
-      }
-    } break;
-    case 1:
-      acc = (int64_t)weights_q15[0] * ring[(write_index ? write_index : ring_size) - 1];
-      break;
-    case 3: {
-      int32_t index0 = (int32_t)write_index - 1;
-      if (index0 < 0) index0 += ring_size;
-      int32_t index1 = index0 - delays[1];
-      if (index1 < 0) index1 += ring_size;
-      int32_t index2 = index0 - delays[2];
-      if (index2 < 0) index2 += ring_size;
-      acc = (int64_t)weights_q15[0] * ring[index0]
-          + (int64_t)weights_q15[1] * ring[index1]
-          + (int64_t)weights_q15[2] * ring[index2];
-    } break;
+  for (uint8_t i = 0; i < tap_count; ++i) {
+    int32_t index = (int32_t)write_index - 1 - (int32_t)delays[i];
+    if (index < 0) index += ring_size;
+    acc += (int64_t)weights_q15[i] * ring[index];
   }
   return (int32_t)(acc >> 15);
 }
