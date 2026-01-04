@@ -11523,7 +11523,7 @@ inline void gcode_M502() {
                                                       filament_change_load_length[active_extruder]);
 
     const int beep_count = parser.intval('B',
-      #ifdef FILAMENT_CHANGE_ALERT_BEEPS && DISABLED (ONE_BUTTON)
+      #if defined(FILAMENT_CHANGE_ALERT_BEEPS) && DISABLED(ONE_BUTTON)
         FILAMENT_CHANGE_ALERT_BEEPS
       #else
         -1
