@@ -15501,7 +15501,7 @@ inline void line_to_z(const float &z) {
       char filename[] = "dagoma0.g";
       card.openFile(filename, true, false, false);
       if (!card.isFileOpen())
-        SERIAL_ECHOLNPGM(PSTR("No file selected. Please upload file to SD."));
+        SERIAL_ECHOLNPGM("No file selected. Please upload file to SD.");
     }
   }
 

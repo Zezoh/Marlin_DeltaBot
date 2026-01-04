@@ -311,7 +311,7 @@ void CardReader::checkSDCard() {
         char filename[] = "dagoma0.g";
         openFile(filename, true, false, false);
         if (!isFileOpen())
-          SERIAL_ECHOLNPGM(PSTR("No file selected. Please upload file to SD."));
+          SERIAL_ECHOLNPGM("No file selected. Please upload file to SD.");
       }
       SERIAL_ECHOLNPGM(MSG_SD_INSERTED);
     }
