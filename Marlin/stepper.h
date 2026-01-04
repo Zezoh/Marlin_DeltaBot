@@ -314,6 +314,7 @@ class Stepper {
       static uint32_t shaper_tick_accum;
       static uint32_t shaper_tick_interval;
       static uint32_t shaper_tick_us;
+      static int64_t shaper_step_rate_q16;
       static int32_t shaper_step_rate;
       static uint32_t shaper_last_interval;
       static float shaper_freq_hz[3];
