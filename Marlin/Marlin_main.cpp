@@ -771,10 +771,9 @@ XYZ_CONSTS_FROM_CONFIG(float, max_length,     MAX_LENGTH);
 XYZ_CONSTS_FROM_CONFIG(float, home_bump_mm,   HOME_BUMP_MM);
 XYZ_CONSTS_FROM_CONFIG(signed char, home_dir, HOME_DIR);
 
-typedef struct {
-  ActivityState activity_state;
-} PrinterStates;
-PrinterStates printer_states;
+#if ENABLED(ONE_BUTTON)
+  PrinterStates printer_states;
+#endif
 
 /**
  * ***************************************************************************
@@ -918,42 +917,6 @@ extern "C" {
 	#define ONE_BUTTON_RELEASED (!ONE_BUTTON_PRESSED)
 	
 #endif
-
-#if ENABLED(SDCARD_AUTOCHECK)
-
-	#define SD_INSERTED (READ(SDCARD_DETECT_PIN) ^ SDCARD_INVERTING)
-	#define SD_RELEASED (!SD_INSERTED)
-	
-	bool inserted = false; 
-
-	inline void CheckSDcard() {
-	  if (SD_INSERTED) {
-		if (inserted) return;
-		card.beginautostart(); // Initial boot
-		delay(100);
-		if (card.cardOK) {
-		  inserted = true;
-		  enqueue_and_echo_commands_P(PSTR("M23 dagoma0.g"));
-		  SERIAL_ECHOLNPGM("SD Card Inserted");
-		}
-	  }
-	  if (SD_RELEASED) {
-		if (!inserted) return;
-		delay(100);
-		inserted = false;
-       if (printer_states.activity_state == ACTIVITY_PAUSED 
-	   || printer_states.activity_state == ACTIVITY_PRINTING) {
-        card.abort_sd_printing = true;
-		SERIAL_ECHOLNPGM("Printing Aborted");
-		card.release();
-	   } else {
-		card.closefile();
-		SERIAL_ECHOLNPGM("SD Card Released");
-		card.release();
-	   }
-	  }
-	}
-#endif	
 
 #if ENABLED(DIGIPOT_I2C)
   extern void digipot_i2c_set_current(uint8_t channel, float current);
@@ -15935,7 +15898,7 @@ void idle(
   #endif
   
   #if ENABLED(SDCARD_AUTOCHECK)
-    CheckSDcard();
+    card.checkSDCard();
   #endif
 
   lcd_update();

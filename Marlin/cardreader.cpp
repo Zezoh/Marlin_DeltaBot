@@ -26,6 +26,7 @@
 
 #include "cardreader.h"
 
+#include "Marlin.h"
 #include "ultralcd.h"
 #include "stepper.h"
 #include "language.h"
@@ -48,6 +49,9 @@ CardReader::CardReader() {
   filesize = 0;
   sdpos = 0;
   file_subcall_ctr = 0;
+  #if ENABLED(SDCARD_AUTOCHECK)
+    autocheck_inserted = false;
+  #endif
 
   workDirDepth = 0;
   ZERO(workDirParents);
@@ -289,6 +293,46 @@ void CardReader::release() {
   sdprinting = false;
   cardOK = false;
 }
+
+#if ENABLED(SDCARD_AUTOCHECK)
+
+void CardReader::checkSDCard() {
+  const bool inserted = IS_SD_INSERTED();
+  if (inserted == autocheck_inserted) return;
+  delay(100);
+  autocheck_inserted = inserted;
+
+  if (inserted) {
+    beginautostart(); // Initial boot
+    if (cardOK) {
+      enqueue_and_echo_commands_P(PSTR("M23 dagoma0.g"));
+      SERIAL_ECHOLNPGM(MSG_SD_INSERTED);
+    }
+    return;
+  }
+
+  #if ENABLED(ONE_BUTTON)
+    const bool is_active = printer_states.activity_state == ACTIVITY_PAUSED
+                           || printer_states.activity_state == ACTIVITY_PRINTING;
+  #else
+    const bool is_active = sdprinting || print_job_timer.isPaused();
+  #endif
+  if (is_active) {
+    abort_sd_printing = true;
+    SERIAL_ECHOLNPGM("Printing Aborted");
+    #if ENABLED(ONE_BUTTON)
+      printer_states.activity_state = ACTIVITY_IDLE;
+    #endif
+    release();
+  }
+  else {
+    closefile();
+    SERIAL_ECHOLNPGM(MSG_SD_REMOVED);
+    release();
+  }
+}
+
+#endif
 
 void CardReader::openAndPrintFile(const char *name) {
   char cmd[4 + strlen(name) + 1]; // Room for "M23 ", filename, and null
