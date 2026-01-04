@@ -59,10 +59,6 @@ public:
   void printingHasFinished();
   void printFilename();
 
-  #if ENABLED(SDCARD_AUTOCHECK)
-    void checkSDCard();
-  #endif
-
   #if ENABLED(LONG_FILENAME_HOST_SUPPORT)
     void printLongPath(char *path);
   #endif
@@ -205,10 +201,6 @@ private:
   #if ENABLED(AUTO_REPORT_SD_STATUS)
     static uint8_t auto_report_sd_interval;
     static millis_t next_sd_report_ms;
-  #endif
-
-  #if ENABLED(SDCARD_AUTOCHECK)
-    bool autocheck_inserted;
   #endif
 };
 

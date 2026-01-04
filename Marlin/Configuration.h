@@ -54,6 +54,10 @@
 #define ONE_BUTTON_ROTARY_DEBOUNCE 2   // Minimum milliseconds between rotary state changes
 #define STEPS_PER_ROTATION 0.025f      // Z move per rotary tick (mm)
 
+//#define SDCARD_AUTOCHECK
+//#define SDCARD_DETECT_PIN 31
+//#define SDCARD_INVERTING true
+
 //===========================================================================
 //============================= Getting Started =============================
 //===========================================================================
@@ -1599,11 +1603,6 @@
  *
  */
 #define SDSUPPORT
-
-/**
- * SD CARD: AUTO CHECK
- */
-//#define SDCARD_AUTOCHECK
 
 /**
  * SD CARD: SPI SPEED
