@@ -2231,11 +2231,18 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
                   cart_de = target_float[E_AXIS] - position_float[E_AXIS];
       const float cart_len = SQRT(sq(cart_dx) + sq(cart_dy) + sq(cart_dz));
       const float move_len = junction_use_e ? ABS(cart_de) : cart_len;
-      const float inv_move_len = move_len > 0 ? 1.0f / move_len : 0.0f;
-      unit_vec[X_AXIS] = cart_dx * inv_move_len;
-      unit_vec[Y_AXIS] = cart_dy * inv_move_len;
-      unit_vec[Z_AXIS] = cart_dz * inv_move_len;
-      unit_vec[E_AXIS] = junction_use_e ? cart_de * inv_move_len : 0.0f;
+      const bool use_cartesian_vec = junction_use_e
+        #ifdef KINEMATIC_SEGMENT_MIN_LENGTH
+          || cart_len >= KINEMATIC_SEGMENT_MIN_LENGTH
+        #endif
+        ;
+      if (use_cartesian_vec) {
+        const float inv_move_len = move_len > 0 ? 1.0f / move_len : 0.0f;
+        unit_vec[X_AXIS] = cart_dx * inv_move_len;
+        unit_vec[Y_AXIS] = cart_dy * inv_move_len;
+        unit_vec[Z_AXIS] = cart_dz * inv_move_len;
+        unit_vec[E_AXIS] = junction_use_e ? cart_de * inv_move_len : 0.0f;
+      }
     #endif
 
     // Skip first block or when previous_nominal_speed is used as a flag for homing and offset cycles.
@@ -2374,11 +2381,16 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
 
   #endif // Classic Jerk Limiting
 
-#if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+  #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
     if (moves_queued && !UNEAR_ZERO(previous_nominal_speed_sqr)) {
       const float corner_factor = delta_motion_corner_factor(previous_speed, current_speed);
       // Apply a gentler reduction to avoid overly aggressive slowing on dense delta segments.
-      if (corner_factor < 1.0f) vmax_junction_sqr *= corner_factor;
+      const bool apply_corner = true
+        #ifdef KINEMATIC_SEGMENT_MIN_LENGTH
+          && block->millimeters >= KINEMATIC_SEGMENT_MIN_LENGTH
+        #endif
+        ;
+      if (apply_corner && corner_factor < 1.0f) vmax_junction_sqr *= corner_factor;
     }
   #endif
 
