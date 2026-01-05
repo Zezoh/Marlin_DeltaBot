@@ -9984,6 +9984,7 @@ inline void gcode_M204() {
  *    Z = Max Z Jerk (units/sec^2)
  *    E = Max E Jerk (units/sec^2)
  *    J = Junction Deviation (mm) (Requires JUNCTION_DEVIATION)
+ *    D = Delta Corner Factor (0.0-1.0, Requires DELTA_MOTION_OPTIMIZATION)
  */
 inline void gcode_M205() {
   if (parser.seen('Q')) planner.min_segment_time_us = parser.value_ulong();
@@ -10019,6 +10020,18 @@ inline void gcode_M205() {
       }
     #endif
     if (parser.seen('E')) planner.max_jerk[E_AXIS] = parser.value_linear_units();
+  #endif
+
+  #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+    if (parser.seen('D')) {
+      const float corner_scale = parser.value_float();
+      if (WITHIN(corner_scale, 0.0f, 1.0f))
+        planner.delta_motion_corner_factor_scale = corner_scale;
+      else {
+        SERIAL_ERROR_START();
+        SERIAL_ERRORLNPGM("?D out of range (0.0 to 1.0)");
+      }
+    }
   #endif
 }
 

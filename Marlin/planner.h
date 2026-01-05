@@ -199,18 +199,22 @@ class Planner {
                  travel_acceleration,           // (mm/s^2) M204 T - Travel acceleration. DEFAULT ACCELERATION for all NON printing moves.
                  min_travel_feedrate_mm_s;      // (mm/s) M205 T - Minimum travel feedrate
 
-    #if ENABLED(JUNCTION_DEVIATION)
-      static float junction_deviation_mm;       // (mm) M205 J
-      #if ENABLED(LIN_ADVANCE)
-        #if ENABLED(DISTINCT_E_FACTORS)
-          static float max_e_jerk[EXTRUDERS];   // Calculated from junction_deviation_mm
-        #else
-          static float max_e_jerk;
-        #endif
+  #if ENABLED(JUNCTION_DEVIATION)
+    static float junction_deviation_mm;       // (mm) M205 J
+    #if ENABLED(LIN_ADVANCE)
+      #if ENABLED(DISTINCT_E_FACTORS)
+        static float max_e_jerk[EXTRUDERS];   // Calculated from junction_deviation_mm
+      #else
+        static float max_e_jerk;
       #endif
-    #else
-      static float max_jerk[NUM_AXIS];          // (mm/s^2) M205 XYZE - The largest speed change requiring no acceleration.
     #endif
+  #else
+    static float max_jerk[NUM_AXIS];          // (mm/s^2) M205 XYZE - The largest speed change requiring no acceleration.
+  #endif
+
+  #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+    static float delta_motion_corner_factor_scale; // (0-1) M205 D
+  #endif
 
     #if ENABLED(LINE_BUILDUP_COMPENSATION_FEATURE)
       /*

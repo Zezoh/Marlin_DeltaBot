@@ -81,6 +81,20 @@
   #include "power.h"
 #endif
 
+#if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+  static float delta_motion_corner_factor(const float prev_speed[NUM_AXIS], const float curr_speed[NUM_AXIS]) {
+    const float prev_mag = SQRT(sq(prev_speed[A_AXIS]) + sq(prev_speed[B_AXIS]) + sq(prev_speed[C_AXIS]));
+    const float curr_mag = SQRT(sq(curr_speed[A_AXIS]) + sq(curr_speed[B_AXIS]) + sq(curr_speed[C_AXIS]));
+    if (prev_mag <= 0.0f || curr_mag <= 0.0f) return 1.0f;
+
+    float cos_angle = (prev_speed[A_AXIS] * curr_speed[A_AXIS]
+                     + prev_speed[B_AXIS] * curr_speed[B_AXIS]
+                     + prev_speed[C_AXIS] * curr_speed[C_AXIS]) / (prev_mag * curr_mag);
+    LIMIT(cos_angle, -1.0f, 1.0f);
+    return 0.5f * (1.0f + cos_angle); // 1.0 straight line, 0.0 reversal
+  }
+#endif
+
 // Delay for delivery of first block to the stepper ISR, if the queue contains 2 or
 // fewer movements. The delay is measured in milliseconds, and must be less than 250ms
 #define BLOCK_DELAY_FOR_1ST_MOVE 100
@@ -123,6 +137,10 @@ float Planner::max_feedrate_mm_s[NUM_AXIS_N], // (mm/s) M203 XYZE - Max speeds
   #endif
 #else
   float Planner::max_jerk[NUM_AXIS];          // (mm/s^2) M205 XYZE - The largest speed change requiring no acceleration.
+#endif
+
+#if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+  float Planner::delta_motion_corner_factor_scale = DELTA_MOTION_CORNER_FACTOR;
 #endif
 
 #if ENABLED(LINE_BUILDUP_COMPENSATION_FEATURE)
@@ -2197,21 +2215,28 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
     // Unit vector of previous path line segment
     static float previous_unit_vec[XYZE];
 
+    const bool junction_use_e = !block->steps[A_AXIS] && !block->steps[B_AXIS] && !block->steps[C_AXIS]
+      #if ENABLED(HANGPRINTER)
+        && !block->steps[D_AXIS]
+      #endif
+    ;
+
     float unit_vec[] = {
       delta_mm[A_AXIS] * inverse_millimeters,
       delta_mm[B_AXIS] * inverse_millimeters,
       delta_mm[C_AXIS] * inverse_millimeters,
-      delta_mm[E_AXIS] * inverse_millimeters
+      junction_use_e ? delta_mm[E_AXIS] * inverse_millimeters : 0.0f
     };
 
     // Skip first block or when previous_nominal_speed is used as a flag for homing and offset cycles.
     if (moves_queued && !UNEAR_ZERO(previous_nominal_speed_sqr)) {
       // Compute cosine of angle between previous and current path. (prev_unit_vec is negative)
       // NOTE: Max junction velocity is computed without sin() or acos() by trig half angle identity.
+      const float prev_e = junction_use_e ? previous_unit_vec[E_AXIS] : 0.0f;
       float junction_cos_theta = -previous_unit_vec[X_AXIS] * unit_vec[X_AXIS]
                                  -previous_unit_vec[Y_AXIS] * unit_vec[Y_AXIS]
                                  -previous_unit_vec[Z_AXIS] * unit_vec[Z_AXIS]
-                                 -previous_unit_vec[E_AXIS] * unit_vec[E_AXIS]
+                                 -prev_e * unit_vec[E_AXIS]
                                 ;
 
       // NOTE: Computed without any expensive trig, sin() or acos(), by trig half angle identity of cos(theta).
@@ -2227,7 +2252,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
           unit_vec[X_AXIS] - previous_unit_vec[X_AXIS],
           unit_vec[Y_AXIS] - previous_unit_vec[Y_AXIS],
           unit_vec[Z_AXIS] - previous_unit_vec[Z_AXIS],
-          unit_vec[E_AXIS] - previous_unit_vec[E_AXIS]
+          unit_vec[E_AXIS] - prev_e
         };
         normalize_junction_vector(junction_unit_vec);
 
@@ -2338,6 +2363,17 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
     vmax_junction_sqr = sq(vmax_junction);
 
   #endif // Classic Jerk Limiting
+
+  #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+    if (moves_queued && !UNEAR_ZERO(previous_nominal_speed_sqr)) {
+      const float corner_factor = delta_motion_corner_factor(previous_speed, current_speed);
+      float scale = delta_motion_corner_factor_scale;
+      LIMIT(scale, 0.0f, 1.0f);
+      const float scaled_factor = 1.0f - (1.0f - corner_factor) * scale;
+      // Apply a gentler reduction to avoid overly aggressive slowing on dense delta segments.
+      if (scaled_factor < 1.0f) vmax_junction_sqr *= scaled_factor;
+    }
+  #endif
 
   // High acceleration limits override low jerk/junction deviation limits (as fixing trapezoids
   // or reducing acceleration introduces too much complexity and/or too much compute)

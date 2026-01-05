@@ -37,7 +37,7 @@
  */
 
 // Change EEPROM version if the structure changes
-#define EEPROM_VERSION "V57"
+#define EEPROM_VERSION "V58"
 #define EEPROM_OFFSET 100
 
 // Check the integrity of data offsets.
@@ -112,6 +112,10 @@ typedef struct SettingsDataStruct {
             planner_min_travel_feedrate_mm_s,               // M205 T           planner.min_travel_feedrate_mm_s
             planner_max_jerk[NUM_AXIS],                     // M205 XYZE/ABCDE  planner.max_jerk[NUM_AXIS]
             planner_junction_deviation_mm;                  // M205 J           planner.junction_deviation_mm
+
+  #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+    float planner_delta_motion_corner_factor_scale;         // M205 D           planner.delta_motion_corner_factor_scale
+  #endif
 
   float home_offset[XYZ];                               // M206 XYZ
 
@@ -482,6 +486,10 @@ void MarlinSettings::postprocess() {
       EEPROM_WRITE(planner.max_jerk);
       dummy = 0.02f;
       EEPROM_WRITE(dummy);
+    #endif
+
+    #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+      EEPROM_WRITE(planner.delta_motion_corner_factor_scale);
     #endif
 
     _FIELD_TEST(home_offset);
@@ -1113,6 +1121,11 @@ void MarlinSettings::postprocess() {
       #else
         EEPROM_READ(planner.max_jerk);
         EEPROM_READ(dummy);
+      #endif
+
+      #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+        EEPROM_READ(planner.delta_motion_corner_factor_scale);
+        if (!validating) LIMIT(planner.delta_motion_corner_factor_scale, 0.0f, 1.0f);
       #endif
 
       //
@@ -1858,6 +1871,10 @@ void MarlinSettings::reset() {
     planner.max_jerk[E_AXIS] = DEFAULT_EJERK;
   #endif
 
+  #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+    planner.delta_motion_corner_factor_scale = DELTA_MOTION_CORNER_FACTOR;
+  #endif
+
   #if HAS_HOME_OFFSET
     ZERO(home_offset);
   #endif
@@ -2274,6 +2291,9 @@ void MarlinSettings::reset() {
           SERIAL_ECHOPGM(" X<max_x_jerk> Y<max_y_jerk> Z<max_z_jerk>");
         #endif
       #endif
+      #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+        SERIAL_ECHOPGM(" D<delta_corner>");
+      #endif
       #if DISABLED(JUNCTION_DEVIATION) || ENABLED(LIN_ADVANCE)
         SERIAL_ECHOPGM(" E<max_e_jerk>");
       #endif
@@ -2298,6 +2318,9 @@ void MarlinSettings::reset() {
         SERIAL_ECHOPAIR(" Z", LINEAR_UNIT(planner.max_jerk[Z_AXIS]));
       #endif
       SERIAL_ECHOPAIR(" E", LINEAR_UNIT(planner.max_jerk[E_AXIS]));
+    #endif
+    #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+      SERIAL_ECHOPAIR(" D", planner.delta_motion_corner_factor_scale);
     #endif
     SERIAL_EOL();
 
