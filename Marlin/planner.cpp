@@ -2356,7 +2356,8 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
     if (moves_queued && !UNEAR_ZERO(previous_nominal_speed_sqr)) {
       const float corner_factor = delta_motion_corner_factor(previous_speed, current_speed);
-      if (corner_factor < 1.0f) vmax_junction_sqr *= sq(corner_factor);
+      // Apply a gentler reduction to avoid overly aggressive slowing on dense delta segments.
+      if (corner_factor < 1.0f) vmax_junction_sqr *= corner_factor;
     }
   #endif
 
