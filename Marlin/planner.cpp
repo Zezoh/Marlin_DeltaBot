@@ -2211,21 +2211,28 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
     // Unit vector of previous path line segment
     static float previous_unit_vec[XYZE];
 
+    const bool junction_use_e = !block->steps[A_AXIS] && !block->steps[B_AXIS] && !block->steps[C_AXIS]
+      #if ENABLED(HANGPRINTER)
+        && !block->steps[D_AXIS]
+      #endif
+    ;
+
     float unit_vec[] = {
       delta_mm[A_AXIS] * inverse_millimeters,
       delta_mm[B_AXIS] * inverse_millimeters,
       delta_mm[C_AXIS] * inverse_millimeters,
-      delta_mm[E_AXIS] * inverse_millimeters
+      junction_use_e ? delta_mm[E_AXIS] * inverse_millimeters : 0.0f
     };
 
     // Skip first block or when previous_nominal_speed is used as a flag for homing and offset cycles.
     if (moves_queued && !UNEAR_ZERO(previous_nominal_speed_sqr)) {
       // Compute cosine of angle between previous and current path. (prev_unit_vec is negative)
       // NOTE: Max junction velocity is computed without sin() or acos() by trig half angle identity.
+      const float prev_e = junction_use_e ? previous_unit_vec[E_AXIS] : 0.0f;
       float junction_cos_theta = -previous_unit_vec[X_AXIS] * unit_vec[X_AXIS]
                                  -previous_unit_vec[Y_AXIS] * unit_vec[Y_AXIS]
                                  -previous_unit_vec[Z_AXIS] * unit_vec[Z_AXIS]
-                                 -previous_unit_vec[E_AXIS] * unit_vec[E_AXIS]
+                                 -prev_e * unit_vec[E_AXIS]
                                 ;
 
       // NOTE: Computed without any expensive trig, sin() or acos(), by trig half angle identity of cos(theta).
@@ -2241,7 +2248,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
           unit_vec[X_AXIS] - previous_unit_vec[X_AXIS],
           unit_vec[Y_AXIS] - previous_unit_vec[Y_AXIS],
           unit_vec[Z_AXIS] - previous_unit_vec[Z_AXIS],
-          unit_vec[E_AXIS] - previous_unit_vec[E_AXIS]
+          unit_vec[E_AXIS] - prev_e
         };
         normalize_junction_vector(junction_unit_vec);
 
