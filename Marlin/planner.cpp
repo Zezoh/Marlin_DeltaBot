@@ -140,7 +140,7 @@ float Planner::max_feedrate_mm_s[NUM_AXIS_N], // (mm/s) M203 XYZE - Max speeds
 #endif
 
 #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
-  float Planner::delta_motion_corner_factor_scale = DELTA_MOTION_CORNER_FACTOR;
+  float Planner::delta_motion_corner_factor_scale = DELTA_MOTION_CORNER_FACTOR * 0.001f;
 #endif
 
 #if ENABLED(LINE_BUILDUP_COMPENSATION_FEATURE)

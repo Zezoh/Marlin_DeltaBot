@@ -548,7 +548,7 @@
 
   // Optional tower-motion cornering slowdown for smoother delta movement
   //#define DELTA_MOTION_OPTIMIZATION
-  #define DELTA_MOTION_CORNER_FACTOR 1.0f // 0.0 disables, 1.0 full effect (M205 D)
+  #define DELTA_MOTION_CORNER_FACTOR 1000 // 0 disables, 1000 full effect (M205 D)
 
   // After homing move down to a height where XY movement is unconstrained
   //#define DELTA_HOME_TO_SAFE_ZONE

@@ -1872,7 +1872,7 @@ void MarlinSettings::reset() {
   #endif
 
   #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
-    planner.delta_motion_corner_factor_scale = DELTA_MOTION_CORNER_FACTOR;
+    planner.delta_motion_corner_factor_scale = DELTA_MOTION_CORNER_FACTOR * 0.001f;
   #endif
 
   #if HAS_HOME_OFFSET
