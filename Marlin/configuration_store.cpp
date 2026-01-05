@@ -37,7 +37,7 @@
  */
 
 // Change EEPROM version if the structure changes
-#define EEPROM_VERSION "V57"
+#define EEPROM_VERSION "V59"
 #define EEPROM_OFFSET 100
 
 // Check the integrity of data offsets.
@@ -483,6 +483,7 @@ void MarlinSettings::postprocess() {
       dummy = 0.02f;
       EEPROM_WRITE(dummy);
     #endif
+
 
     _FIELD_TEST(home_offset);
 
@@ -1114,6 +1115,7 @@ void MarlinSettings::postprocess() {
         EEPROM_READ(planner.max_jerk);
         EEPROM_READ(dummy);
       #endif
+
 
       //
       // Home Offset (M206)
@@ -1857,6 +1859,7 @@ void MarlinSettings::reset() {
     #endif
     planner.max_jerk[E_AXIS] = DEFAULT_EJERK;
   #endif
+
 
   #if HAS_HOME_OFFSET
     ZERO(home_offset);

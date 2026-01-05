@@ -10020,6 +10020,7 @@ inline void gcode_M205() {
     #endif
     if (parser.seen('E')) planner.max_jerk[E_AXIS] = parser.value_linear_units();
   #endif
+
 }
 
 #if HAS_M206_COMMAND
