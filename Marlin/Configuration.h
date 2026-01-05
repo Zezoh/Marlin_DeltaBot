@@ -546,6 +546,9 @@
   // Convert feedrates to apply to the Effector instead of the Carriages
   //#define DELTA_FEEDRATE_SCALING
 
+  // Optional tower-motion cornering slowdown for smoother delta movement
+  //#define DELTA_MOTION_OPTIMIZATION
+
   // After homing move down to a height where XY movement is unconstrained
   //#define DELTA_HOME_TO_SAFE_ZONE
 

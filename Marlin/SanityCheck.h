@@ -758,6 +758,10 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
   #endif
 #endif
 
+#if ENABLED(DELTA_MOTION_OPTIMIZATION) && DISABLED(DELTA)
+  #error "DELTA_MOTION_OPTIMIZATION is only compatible with DELTA kinematics."
+#endif
+
 /**
  * Hangprinter requirements
  */

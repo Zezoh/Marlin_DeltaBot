@@ -81,6 +81,20 @@
   #include "power.h"
 #endif
 
+#if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+  static float delta_motion_corner_factor(const float prev_speed[NUM_AXIS], const float curr_speed[NUM_AXIS]) {
+    const float prev_mag = SQRT(sq(prev_speed[A_AXIS]) + sq(prev_speed[B_AXIS]) + sq(prev_speed[C_AXIS]));
+    const float curr_mag = SQRT(sq(curr_speed[A_AXIS]) + sq(curr_speed[B_AXIS]) + sq(curr_speed[C_AXIS]));
+    if (prev_mag <= 0.0f || curr_mag <= 0.0f) return 1.0f;
+
+    float cos_angle = (prev_speed[A_AXIS] * curr_speed[A_AXIS]
+                     + prev_speed[B_AXIS] * curr_speed[B_AXIS]
+                     + prev_speed[C_AXIS] * curr_speed[C_AXIS]) / (prev_mag * curr_mag);
+    LIMIT(cos_angle, -1.0f, 1.0f);
+    return 0.5f * (1.0f + cos_angle); // 1.0 straight line, 0.0 reversal
+  }
+#endif
+
 // Delay for delivery of first block to the stepper ISR, if the queue contains 2 or
 // fewer movements. The delay is measured in milliseconds, and must be less than 250ms
 #define BLOCK_DELAY_FOR_1ST_MOVE 100
@@ -2338,6 +2352,13 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
     vmax_junction_sqr = sq(vmax_junction);
 
   #endif // Classic Jerk Limiting
+
+  #if ENABLED(DELTA_MOTION_OPTIMIZATION) && ENABLED(DELTA)
+    if (moves_queued && !UNEAR_ZERO(previous_nominal_speed_sqr)) {
+      const float corner_factor = delta_motion_corner_factor(previous_speed, current_speed);
+      if (corner_factor < 1.0f) vmax_junction_sqr *= sq(corner_factor);
+    }
+  #endif
 
   // High acceleration limits override low jerk/junction deviation limits (as fixing trapezoids
   // or reducing acceleration introduces too much complexity and/or too much compute)
