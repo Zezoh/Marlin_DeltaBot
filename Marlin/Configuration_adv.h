@@ -510,6 +510,10 @@
   #define JUNCTION_DEVIATION_MM 0.02  // (mm) Distance from real junction edge
 #endif
 
+// Allow max feedrate to override junction limits (JD / jerk / delta cornering).
+// Use with caution as this can increase ringing or overshoot on sharp corners.
+//#define MAX_FEEDRATE_JUNCTION_OVERRIDE
+
 /**
  * Adaptive Step Smoothing increases the resolution of multi-axis moves, particularly at step frequencies
  * below 1kHz (for AVR) or 10kHz (for ARM), where aliasing between axes in multi-axis moves causes audible
