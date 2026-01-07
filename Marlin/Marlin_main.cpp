@@ -15499,7 +15499,7 @@ inline void line_to_z(const float &z) {
     if (!card.cardOK)
       card.initsd();
     if (card.cardOK && !card.isFileOpen()) {
-      char filename[] = "dagoma0.g";
+      const char filename[] = AUTO_PRINT_FILE_NAME;
       card.openFile(filename, true, false, false);
       if (!card.isFileOpen())
         SERIAL_ECHOLNPGM("No file selected. Please upload file to SD.");
@@ -16286,10 +16286,6 @@ void setup() {
     enable_D();
   #endif
 
-  #if ENABLED(SDSUPPORT) && DISABLED(SDCARD_AUTOCHECK)
-    check_sd_content_once();
-  #endif
-
   #if ENABLED(SDSUPPORT) && !(ENABLED(ULTRA_LCD) && PIN_EXISTS(SD_DETECT)) && DISABLED(ONE_BUTTON)
     card.beginautostart();
   #endif
@@ -16337,6 +16333,17 @@ void loop() {
     }
 
   #endif // SDSUPPORT
+
+  #if ENABLED(SDSUPPORT) && DISABLED(SDCARD_AUTOCHECK)
+    static bool sd_autoprint_checked = false;
+    if (!sd_autoprint_checked
+        && printer_states.activity_state == ACTIVITY_IDLE
+        && commands_in_queue == 0
+    ) {
+      check_sd_content_once();
+      sd_autoprint_checked = true;
+    }
+  #endif
 
   if (commands_in_queue < BUFSIZE) get_available_commands();
 

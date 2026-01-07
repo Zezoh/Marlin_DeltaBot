@@ -1607,7 +1607,14 @@
  * SD CARD: AUTO CHECK
  */
 //#define SDCARD_AUTOCHECK
-//#define SDCARD_AUTOCHECK_INVERTING true
+// SD_DETECT_INVERTED is configured in Configuration_adv.h
+
+/**
+ * SD CARD: AUTO PRINT FILE NAME
+ *
+ * File to auto-start if present on SD.
+ */
+#define AUTO_PRINT_FILE_NAME "dagoma0.g"
 
 /**
  * SD CARD: SPI SPEED

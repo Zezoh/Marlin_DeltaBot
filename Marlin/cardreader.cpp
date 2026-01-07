@@ -308,7 +308,7 @@ void CardReader::checkSDCard() {
       initsd();
     if (cardOK) {
       if (!isFileOpen()) {
-        char filename[] = "dagoma0.g";
+        const char filename[] = AUTO_PRINT_FILE_NAME;
         openFile(filename, true, false, false);
         if (!isFileOpen())
           SERIAL_ECHOLNPGM("No file selected. Please upload file to SD.");
