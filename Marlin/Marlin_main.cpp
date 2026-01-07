@@ -218,7 +218,6 @@
  * M702 - Unload filament (requires FILAMENT_LOAD_UNLOAD_GCODES)
  * M851 - Set Z probe's Z offset in current units. (Negative = below the nozzle.)
  * M852 - Set skew factors: "M852 [I<xy>] [J<xz>] [K<yz>]". (Requires SKEW_CORRECTION_GCODE, and SKEW_CORRECTION_FOR_Z for IJ)
- * M853 - ...
  * M860 - Report the position of position encoder modules.
  * M861 - Report the status of position encoder modules.
  * M862 - Perform an axis continuity test for position encoder modules.
@@ -263,6 +262,7 @@
 #include "stepper.h"
 #include "endstops.h"
 #include "temperature.h"
+#include "fsr_auto.h"
 #include "cardreader.h"
 #include "configuration_store.h"
 #include "language.h"
@@ -2540,10 +2540,6 @@ void clean_up_after_endstop_or_probe_move() {
       probing_pause(true);
     #endif
 	
-    #if ENABLED(FSR_SENSOR)
-      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
-    #endif
-
     // Move down until probe triggered
     do_blocking_move_to_z(z, fr_mm_s);
 
@@ -2565,10 +2561,6 @@ void clean_up_after_endstop_or_probe_move() {
       if (probe_triggered && set_bltouch_deployed(false)) return true;
     #endif
 	
-    #if ENABLED(FSR_SENSOR)
-      if (thermalManager.fsrEnabled()) thermalManager.resetThreshold();
-    #endif
-	
     endstops.hit_on_purpose();
 
     // Get Z where the steppers were interrupted
@@ -2583,20 +2575,6 @@ void clean_up_after_endstop_or_probe_move() {
 
     return !probe_triggered;
   }
-
-  #if ENABLED(FSR_SENSOR)
-    static bool do_fsr_probe_move(const float z, const float fr_mm_s) {
-      #if HAS_BED_PROBE
-        endstops.enable_z_probe(true);
-      #endif
-      thermalManager.enable_fsr_probe();
-      safe_delay(20);
-      thermalManager.resetThreshold();
-      const bool probe_failed = do_probe_move(z, fr_mm_s);
-      thermalManager.disable_fsr_probe();
-      return probe_failed;
-    }
-  #endif
 
   /**
    * @details Used by probe_pt to do a single Z probe at the current position.
@@ -2614,46 +2592,46 @@ void clean_up_after_endstop_or_probe_move() {
     // If Z isn't known then probe to -10mm.
     const float z_probe_low_point = TEST(axis_known_position, Z_AXIS) ? -zprobe_zoffset + Z_PROBE_LOW_POINT : -10.0;
 
+    #if ENABLED(FSR_SENSOR)
+      auto probe_move = [](const float z, const float fr_mm_s) -> bool {
+        if (!fsr_auto_prepare_probe()) return true;
+        if (!fsr_auto_arm()) return true;
+        const bool probe_failed = do_probe_move(z, fr_mm_s);
+        fsr_auto_disarm();
+        return probe_failed;
+      };
+    #else
+      auto probe_move = [](const float z, const float fr_mm_s) -> bool {
+        return do_probe_move(z, fr_mm_s);
+      };
+    #endif
+
+    #if MULTIPLE_PROBING >= 3
+      float probes_total = 0;
+    #endif
+
     // Double-probing does a fast probe followed by a slow probe
     #if MULTIPLE_PROBING == 2
 
-      #if ENABLED(FSR_SENSOR)
-        // Avoid arming the FSR while moving fast to prevent false triggers.
-        float z = Z_CLEARANCE_DEPLOY_PROBE + 5.0;
-        if (zprobe_zoffset < 0) z -= zprobe_zoffset;
-        if (current_position[Z_AXIS] > z)
-          do_blocking_move_to_z(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
-
-        if (do_fsr_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
-          #if ENABLED(DEBUG_LEVELING_FEATURE)
-            if (DEBUGGING(LEVELING)) {
-              SERIAL_ECHOLNPGM("SLOW Probe fail!");
-              DEBUG_POS("<<< run_z_probe", current_position);
-            }
-          #endif
-          return NAN;
-        }
-      #else
-        // Do a first probe at the fast speed
-        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_FAST))) {
-          #if ENABLED(DEBUG_LEVELING_FEATURE)
-            if (DEBUGGING(LEVELING)) {
-              SERIAL_ECHOLNPGM("FAST Probe fail!");
-              DEBUG_POS("<<< run_z_probe", current_position);
-            }
-          #endif
-          return NAN;
-        }
-
-        float first_probe_z = current_position[Z_AXIS];
-
+      // Do a first probe at the fast speed
+      if (probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_FAST))) {
         #if ENABLED(DEBUG_LEVELING_FEATURE)
-          if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR("1st Probe Z:", first_probe_z);
+          if (DEBUGGING(LEVELING)) {
+            SERIAL_ECHOLNPGM("FAST Probe fail!");
+            DEBUG_POS("<<< run_z_probe", current_position);
+          }
         #endif
+        return NAN;
+      }
 
-        // move up to make clearance for the probe
-        do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+      float first_probe_z = current_position[Z_AXIS];
+
+      #if ENABLED(DEBUG_LEVELING_FEATURE)
+        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR("1st Probe Z:", first_probe_z);
       #endif
+
+      // move up to make clearance for the probe
+      do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
 
     #else
 
@@ -2663,41 +2641,15 @@ void clean_up_after_endstop_or_probe_move() {
       if (zprobe_zoffset < 0) z -= zprobe_zoffset;
 
       if (current_position[Z_AXIS] > z) {
-        #if ENABLED(FSR_SENSOR)
-          do_blocking_move_to_z(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
-        #else
-          // If we don't make it to the z position (i.e. the probe triggered), move up to make clearance for the probe
-          if (!do_probe_move(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST)))
-            do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_BETWEEN_PROBES, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
-        #endif
+        // If we don't make it to the z position (i.e. the probe triggered), move up to make clearance for the probe
+        if (!probe_move(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST)))
+          do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_BETWEEN_PROBES, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
       }
     #endif
-	
+
     #if MULTIPLE_PROBING == 3
-
-      bool all_points_are_good = false;
-      float z_tolerance = 0.03;
-      float z_read[3] = {67.0};
-      float z_avg = 0.0;
-      int adjust_fsr_threshold = 0;
-
-      do {
-
-        if (adjust_fsr_threshold > 5) {
-          const float requested_ratio = thermalManager.fsr_threshold_ratio - 0.15f;
-          const bool clamped = !thermalManager.set_fsr_threshold_ratio(requested_ratio);
-          if (clamped) thermalManager.resetThreshold();
-          SERIAL_ECHOPGM("New fsr threshold: ");
-          SERIAL_ECHOLN(thermalManager.fsr_threshold_ratio);
-          adjust_fsr_threshold = 0;
-        }
-
-        // move down slowly to find bed
-        #if ENABLED(FSR_SENSOR)
-          if (do_fsr_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
-        #else
-          if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
-        #endif
+      for (uint8_t p = 3; p--;) {
+        if (probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
           #if ENABLED(DEBUG_LEVELING_FEATURE)
             if (DEBUGGING(LEVELING)) {
               SERIAL_ECHOLNPGM("SLOW Probe fail!");
@@ -2706,47 +2658,18 @@ void clean_up_after_endstop_or_probe_move() {
           #endif
           return NAN;
         }
-
-        z_read[2] = z_read[1];
-        z_read[1] = z_read[0];
-        z_read[0] = current_position[Z_AXIS];
-
-        do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_SLOW*2));
-
-        adjust_fsr_threshold += 1;
-        z_avg = (z_read[0] + z_read[1] + z_read[2]) / 3.0;
-
-        if (destination[Z_AXIS] > 66.90) {
-          int i = 10;
-          do {
-            idle();
-            delay(50);
-          } while (--i);
-          all_points_are_good = false;
-        } else {
-          // Check for all points
-          all_points_are_good =
-            abs(z_read[0] - z_avg) < z_tolerance &&
-            abs(z_read[1] - z_avg) < z_tolerance &&
-            abs(z_read[2] - z_avg) < z_tolerance;
-        }
-      } while (!all_points_are_good);
-
-      adjust_fsr_threshold = 0;
+        probes_total += current_position[Z_AXIS];
+        if (p) do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_SLOW * 2));
+      }
     #endif
 
     #if MULTIPLE_PROBING > 3
 
-      float probes_total = 0;
       for (uint8_t p = MULTIPLE_PROBING + 1; --p;) {
     #endif
 
         // move down slowly to find bed
-        #if ENABLED(FSR_SENSOR)
-          if (do_fsr_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
-        #else
-          if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
-        #endif
+        if (probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
           #if ENABLED(DEBUG_LEVELING_FEATURE)
             if (DEBUGGING(LEVELING)) {
               SERIAL_ECHOLNPGM("SLOW Probe fail!");
@@ -2770,25 +2693,21 @@ void clean_up_after_endstop_or_probe_move() {
     #elif MULTIPLE_PROBING == 3
 
       // Return the average value of all probes
-      const float measured_z = z_avg;
+      const float measured_z = probes_total * (1.0f / 3.0f);
 
     #elif MULTIPLE_PROBING == 2
 
-      #if ENABLED(FSR_SENSOR)
-        const float measured_z = current_position[Z_AXIS];
-      #else
-        const float z2 = current_position[Z_AXIS];
+      const float z2 = current_position[Z_AXIS];
 
-        #if ENABLED(DEBUG_LEVELING_FEATURE)
-          if (DEBUGGING(LEVELING)) {
-            SERIAL_ECHOPAIR("2nd Probe Z:", z2);
-            SERIAL_ECHOLNPAIR(" Discrepancy:", first_probe_z - z2);
-          }
-        #endif
-
-        // Return a weighted average of the fast and slow probes
-        const float measured_z = (z2 * 3.0 + first_probe_z * 2.0) * 0.2;
+      #if ENABLED(DEBUG_LEVELING_FEATURE)
+        if (DEBUGGING(LEVELING)) {
+          SERIAL_ECHOPAIR("2nd Probe Z:", z2);
+          SERIAL_ECHOLNPAIR(" Discrepancy:", first_probe_z - z2);
+        }
       #endif
+
+      // Return a weighted average of the fast and slow probes
+      const float measured_z = (z2 * 3.0 + first_probe_z * 2.0) * 0.2;
 
     #else
 
@@ -6013,7 +5932,194 @@ void home_all_axes() { gcode_G28(true); }
    *   Y   Probe Y position (default current Y)
    *   E   Engage the probe for each probe (default 1)
    */
+
+  #if ENABLED(FSR_SENSOR)
+    static bool fsr_calibrate() {
+      constexpr uint16_t CAL_TARE_MS = 300;
+      constexpr uint16_t RUN_TARE_MS = 150;
+      constexpr uint8_t N_TOUCHES = 7;
+      constexpr float CAL_FEEDRATE = 18.0f;
+      constexpr float RETRACT_MM = 2.0f;
+      constexpr uint16_t SETTLE_MS = 400;
+      constexpr uint8_t VALIDATE_TOUCHES = 3;
+      constexpr float VALIDATE_Z_TOL_MM = 0.02f;
+
+      const float z_probe_low_point = TEST(axis_known_position, Z_AXIS) ? -zprobe_zoffset + Z_PROBE_LOW_POINT : -10.0f;
+
+      if (!fsr_auto_tare(CAL_TARE_MS)) {
+        SERIAL_ECHOLNPGM("FSR: tare failed");
+        return false;
+      }
+
+      uint16_t baseline, noise_pp, slope_noise;
+      fsr_auto_get_tare(baseline, noise_pp, slope_noise);
+
+      const uint16_t min_offset_seed = (uint16_t)max(3UL * noise_pp, 2UL);
+      const uint16_t slope_seed = (uint16_t)max(3UL * slope_noise, 2UL);
+      fsr_auto_set_thresholds(min_offset_seed, min_offset_seed, slope_seed, 2);
+
+      uint16_t amp_samples[N_TOUCHES];
+      uint16_t slope_samples[N_TOUCHES];
+
+      for (uint8_t i = 0; i < N_TOUCHES; i++) {
+        if (!fsr_auto_arm()) return false;
+        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(CAL_FEEDRATE))) {
+          fsr_auto_disarm();
+          SERIAL_ECHOLNPGM("FSR: probe failed");
+          return false;
+        }
+        fsr_auto_disarm();
+
+        uint16_t trig_filt, slope_peak;
+        fsr_auto_get_last_trigger(trig_filt, slope_peak);
+        const uint16_t amp = trig_filt > baseline ? trig_filt - baseline : 0;
+        amp_samples[i] = amp;
+        slope_samples[i] = slope_peak;
+
+        SERIAL_ECHOPGM("CAL,i=");
+        SERIAL_ECHO(i + 1);
+        SERIAL_ECHOPAIR(",trig=", trig_filt);
+        SERIAL_ECHOPAIR(",amp=", amp);
+        SERIAL_ECHOPAIR(",slope=", slope_peak);
+        SERIAL_EOL();
+
+        do_blocking_move_to_z(current_position[Z_AXIS] + RETRACT_MM, MMM_TO_MMS(Z_PROBE_SPEED_SLOW));
+        safe_delay(SETTLE_MS);
+      }
+
+      auto mean_trimmed = [](const uint16_t *vals, const uint8_t count) -> uint16_t {
+        uint32_t sum = 0;
+        uint16_t min_v = 0xFFFF;
+        uint16_t max_v = 0;
+        for (uint8_t i = 0; i < count; i++) {
+          const uint16_t v = vals[i];
+          sum += v;
+          if (v < min_v) min_v = v;
+          if (v > max_v) max_v = v;
+        }
+        sum -= min_v;
+        sum -= max_v;
+        return sum / (count - 2);
+      };
+
+      auto clamp_u16 = [](const uint32_t value, const uint16_t min_v, const uint16_t max_v) -> uint16_t {
+        if (value < min_v) return min_v;
+        if (value > max_v) return max_v;
+        return (uint16_t)value;
+      };
+
+      const uint16_t amp = mean_trimmed(amp_samples, N_TOUCHES);
+      const uint16_t slope = mean_trimmed(slope_samples, N_TOUCHES);
+
+      const uint16_t min_offset = clamp_u16(max(3UL * noise_pp, amp / 8UL), 1, 1023);
+      const uint16_t slope_threshold = clamp_u16(max(3UL * slope_noise, slope / 10UL), 1, 1023);
+      const uint8_t debounce = (uint8_t)constrain(2 + (noise_pp > 8) + (noise_pp > 16), 2, 6);
+      const uint16_t trig_offset = clamp_u16((amp * 85UL) / 100UL, (uint16_t)(2 * noise_pp), (uint16_t)((amp * 95UL) / 100UL));
+
+      FSRModel new_model;
+      new_model.version = FSR_MODEL_VERSION;
+      new_model.valid = 1;
+      new_model.trig_offset_adc = trig_offset;
+      new_model.min_offset_adc = min_offset;
+      new_model.slope_adc = slope_threshold;
+      new_model.debounce = debounce;
+      new_model.noise_pp = noise_pp;
+      new_model.slope_noise = slope_noise;
+      new_model.amp_adc = amp;
+
+      const FSRModel old_model = fsr_auto_get_model();
+      const bool old_valid = fsr_auto_model_valid();
+      auto restore_old_model = [&]() {
+        if (old_valid) fsr_auto_set_model(old_model);
+        else fsr_auto_mark_invalid();
+      };
+      fsr_auto_set_model(new_model);
+      if (!fsr_auto_model_valid()) {
+        restore_old_model();
+        SERIAL_ECHOLNPGM("FSR: derived model invalid");
+        return false;
+      }
+
+      float z_min = 999.0f, z_max = -999.0f;
+      for (uint8_t i = 0; i < VALIDATE_TOUCHES; i++) {
+        if (!fsr_auto_tare(RUN_TARE_MS)) {
+          SERIAL_ECHOLNPGM("FSR: tare failed");
+          restore_old_model();
+          return false;
+        }
+        fsr_auto_use_model_thresholds();
+        if (!fsr_auto_arm()) {
+          restore_old_model();
+          return false;
+        }
+        if (do_probe_move(z_probe_low_point, MMM_TO_MMS(Z_PROBE_SPEED_SLOW))) {
+          fsr_auto_disarm();
+          SERIAL_ECHOLNPGM("FSR: probe failed");
+          restore_old_model();
+          return false;
+        }
+        fsr_auto_disarm();
+        z_min = min(z_min, current_position[Z_AXIS]);
+        z_max = max(z_max, current_position[Z_AXIS]);
+        do_blocking_move_to_z(current_position[Z_AXIS] + RETRACT_MM, MMM_TO_MMS(Z_PROBE_SPEED_SLOW));
+        safe_delay(SETTLE_MS);
+      }
+
+      const float z_range = z_max - z_min;
+      SERIAL_ECHOPGM("FSR base=");
+      SERIAL_ECHO(baseline);
+      SERIAL_ECHOPAIR(" noise=", noise_pp);
+      SERIAL_ECHOPAIR(" slope_noise=", slope_noise);
+      SERIAL_EOL();
+      SERIAL_ECHOPGM("FSR trig_offset=");
+      SERIAL_ECHO(trig_offset);
+      SERIAL_ECHOPAIR(" min_offset=", min_offset);
+      SERIAL_ECHOPAIR(" slope=", slope_threshold);
+      SERIAL_ECHOPAIR(" debounce=", debounce);
+      SERIAL_EOL();
+      SERIAL_ECHOPGM("FSR validate_z_range=");
+      SERIAL_ECHO_F(z_range, 4);
+      SERIAL_EOL();
+
+      const bool pass = z_range <= VALIDATE_Z_TOL_MM;
+      if (!pass) {
+        SERIAL_ECHOLNPGM("FSR calibration failed");
+        if (old_valid) fsr_auto_set_model(old_model);
+        else fsr_auto_mark_invalid();
+        return false;
+      }
+
+      SERIAL_ECHOLNPGM("FSR calibration OK");
+      settings.save();
+      return true;
+    }
+  #endif
+
   inline void gcode_G30() {
+    #if ENABLED(FSR_SENSOR)
+      const bool do_calibrate = parser.seen('C');
+      if (do_calibrate) {
+        if (axis_unhomed_error()) return;
+        if (!position_is_reachable_by_probe(0, 0)) return;
+
+        #if HAS_LEVELING
+          set_bed_leveling_enabled(false);
+        #endif
+
+        setup_for_endstop_or_probe_move();
+
+        do_blocking_move_to_z(Z_CLEARANCE_DEPLOY_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+        do_blocking_move_to_xy(0, 0);
+        planner.synchronize();
+
+        fsr_calibrate();
+
+        clean_up_after_endstop_or_probe_move();
+        report_current_position();
+        return;
+      }
+    #endif
+
     const float xpos = parser.linearval('X', current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER),
                 ypos = parser.linearval('Y', current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER);
 
@@ -11422,34 +11528,6 @@ inline void gcode_M502() {
 
 #endif // SKEW_CORRECTION_GCODE
 
-#if ENABLED(FSR_SENSOR)
-  inline void gcode_M853() {
-    const bool has_value = parser.seen('V');
-    if (has_value) {
-      const float requested_ratio = parser.value_float();
-      const bool in_range = thermalManager.set_fsr_threshold_ratio(requested_ratio);
-      SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
-      if (!in_range) {
-        SERIAL_ECHOPGM(" (clamped to ");
-        SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MIN, 2);
-        SERIAL_ECHOPGM("..");
-        SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MAX, 2);
-        SERIAL_CHAR(')');
-      }
-      SERIAL_EOL();
-    }
-    else {
-      SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
-      SERIAL_ECHOPGM(" (range ");
-      SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MIN, 2);
-      SERIAL_ECHOPGM("..");
-      SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MAX, 2);
-      SERIAL_CHAR(')');
-      SERIAL_EOL();
-    }
-  }
-#endif
-
   #if ENABLED(ADVANCED_PAUSE_FEATURE)
 
   /**
@@ -13570,11 +13648,6 @@ void process_parsed_command() {
       #if ENABLED(SKEW_CORRECTION_GCODE)
         case 852: gcode_M852(); break;                            // M852: Set Skew factors
       #endif
-	  
-	  #if ENABLED(FSR_SENSOR)
-        case 853: gcode_M853(); break;                            // M853: Set SFSR Sensetivity
-      #endif
-
       #if ENABLED(I2C_POSITION_ENCODERS)
         case 860: gcode_M860(); break;                            // M860: Report encoder module position
         case 861: gcode_M861(); break;                            // M861: Report encoder module status
@@ -15896,6 +15969,10 @@ void idle(
 
   thermalManager.manage_heater();
 
+  #if ENABLED(FSR_SENSOR)
+    fsr_auto_update();
+  #endif
+
   #if ENABLED(PRINTCOUNTER)
     print_job_timer.tick();
   #endif
@@ -16124,6 +16201,10 @@ void setup() {
   SYNC_PLAN_POSITION_KINEMATIC();
 
   thermalManager.init();    // Initialize temperature loop
+
+  #if ENABLED(FSR_SENSOR)
+    fsr_auto_init();
+  #endif
 
   print_job_timer.init();   // Initial setup of print job timer
 

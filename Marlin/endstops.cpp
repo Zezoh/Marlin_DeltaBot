@@ -28,6 +28,7 @@
 #include "cardreader.h"
 #include "endstops.h"
 #include "temperature.h"
+#include "fsr_auto.h"
 #include "stepper.h"
 #include "ultralcd.h"
 
@@ -507,8 +508,11 @@ void Endstops::update() {
       #endif
     #elif ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
       #if ENABLED(FSR_SENSOR)
-        SET_BIT_TO(live_state, _ENDSTOP(Z, MIN), thermalManager.fsrTriggered());
-       #else
+        if (z_probe_enabled && fsr_auto_is_armed())
+          SET_BIT_TO(live_state, _ENDSTOP(Z, MIN), fsr_auto_tripped());
+        else
+          UPDATE_ENDSTOP_BIT(Z, MIN);
+      #else
         UPDATE_ENDSTOP_BIT(Z, MIN);
       #endif
     #elif Z_HOME_DIR < 0
@@ -519,8 +523,11 @@ void Endstops::update() {
   // When closing the gap check the enabled probe
   #if ENABLED(Z_MIN_PROBE_ENDSTOP)
       #if ENABLED(FSR_SENSOR)
-        SET_BIT_TO(live_state, _ENDSTOP(Z, MIN_PROBE), thermalManager.fsrTriggered());
-       #else
+        if (z_probe_enabled && fsr_auto_is_armed())
+          SET_BIT_TO(live_state, _ENDSTOP(Z, MIN_PROBE), fsr_auto_tripped());
+        else
+          UPDATE_ENDSTOP_BIT(Z, MIN_PROBE);
+      #else
         UPDATE_ENDSTOP_BIT(Z, MIN_PROBE);
       #endif
   #endif

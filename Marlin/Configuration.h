@@ -846,24 +846,18 @@
 //#define BLTOUCH
 
 /**
- * Force Sensing Resistor (FSR) Z probe
- */
-#define FSR_SENSOR
-#define FSR_THRESHOLD_RATIO -1.5
-
-/**
  * Enable one or more of the following if probing seems unreliable.
  * Heaters and/or fans can be disabled during probing to minimize electrical
  * noise. A delay can also be added to allow noise and vibration to settle.
  * These options are most useful for the BLTouch probe, but may also improve
- * readings with inductive probes and piezo sensors.
+ * readings with inductive probes.
  */
 //#define PROBING_HEATERS_OFF       // Turn heaters off when probing
 #if ENABLED(PROBING_HEATERS_OFF)
   //#define WAIT_FOR_BED_HEATER     // Wait for bed to heat back up between probes (to improve accuracy)
 #endif
 //#define PROBING_FANS_OFF          // Turn fans off when probing
-#define DELAY_BEFORE_PROBING 300    // (ms) To prevent vibrations from triggering piezo sensors
+#define DELAY_BEFORE_PROBING 300    // (ms) To prevent vibrations from triggering the probe
 
 // A probe that is deployed and stowed with a solenoid pin (SOL1_PIN)
 //#define SOLENOID_PROBE

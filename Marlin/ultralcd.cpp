@@ -3398,10 +3398,6 @@ void lcd_quick_feedback(const bool clear_buttons) {
       MENU_ITEM(submenu, MSG_BLTOUCH, bltouch_menu);
     #endif
 	
-    #if ENABLED(FSR_SENSOR)
-      MENU_ITEM_EDIT_CALLBACK(float43, MSG_FSR_SENSETIVITY, &thermalManager.fsr_threshold_ratio, -1, -15, lcd_store_settings);
-    #endif
-
     #if ENABLED(EEPROM_SETTINGS)
       MENU_ITEM(function, MSG_STORE_EEPROM, lcd_store_settings);
       MENU_ITEM(function, MSG_LOAD_EEPROM, lcd_load_settings);

@@ -453,6 +453,12 @@
 
 #endif // BLTOUCH
 
+// @section probes
+
+// Force Sensing Resistor (FSR) probe
+#define FSR_SENSOR
+#define FSR_ADC_PIN A15
+
 // @section machine
 
 #define AXIS_RELATIVE_MODES {false, false, false, false}
