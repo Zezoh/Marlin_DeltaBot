@@ -58,10 +58,16 @@
  *
  *                           time ----->
  *
- *  The trapezoid is the shape the speed curve over time. It starts at block->initial_rate, accelerates
- *  first block->accelerate_until step_events_completed, then keeps going at constant speed until
- *  step_events_completed reaches block->decelerate_after after which it decelerates until the trapezoid generator is reset.
- *  The slope of acceleration is calculated using v = u + at where t is the accumulated timer values of the steps so far.
+ *  The speed over time graph forms a TRAPEZOID. The slope of acceleration is calculated by
+ *    v = u + t
+ *  where 't' is the accumulated timer values of the steps so far.
+ *
+ *  The Stepper ISR dynamically executes acceleration, deceleration, and cruising according to the block parameters.
+ *    - Start at block->initial_rate.
+ *    - Accelerate while step_events_completed < block->accelerate_before.
+ *    - Cruise while step_events_completed < block->decelerate_start.
+ *    - Decelerate after that, until all steps are completed.
+ *    - Reset the trapezoid generator.
  */
 
 /**
@@ -127,6 +133,7 @@ bool Stepper::abort_current_block;
   bool Stepper::locked_Z_motor = false, Stepper::locked_Z2_motor = false;
 #endif
 
+// In timer ticks
 uint32_t Stepper::acceleration_time, Stepper::deceleration_time;
 uint8_t Stepper::steps_per_isr;
 
@@ -139,8 +146,8 @@ int32_t Stepper::delta_error[NUM_AXIS] = { 0 };
 uint32_t Stepper::advance_dividend[NUM_AXIS] = { 0 },
          Stepper::advance_divisor = 0,
          Stepper::step_events_completed = 0, // The number of step events executed in the current block
-         Stepper::accelerate_until,          // The point from where we need to stop acceleration
-         Stepper::decelerate_after,          // The point from where we need to start decelerating
+         Stepper::accelerate_before,         // The count at which to start cruising
+         Stepper::decelerate_start,          // The count at which to start decelerating
          Stepper::step_event_count;          // The total event count for the current block
 
 #if ENABLED(MIXING_EXTRUDER)
@@ -162,6 +169,7 @@ uint32_t Stepper::advance_dividend[NUM_AXIS] = { 0 },
 #endif
 
 uint32_t Stepper::nextMainISR = 0;
+
 
 #if ENABLED(LIN_ADVANCE)
 
@@ -421,7 +429,7 @@ void Stepper::set_directions() {
    *  a "linear pop" velocity curve; with pop being the sixth derivative of position:
    *  velocity - 1st, acceleration - 2nd, jerk - 3rd, snap - 4th, crackle - 5th, pop - 6th
    *
-   *  The Bézier curve takes the form:
+   *  The 6th order Bézier curve takes the form:
    *
    *  V(t) = P_0 * B_0(t) + P_1 * B_1(t) + P_2 * B_2(t) + P_3 * B_3(t) + P_4 * B_4(t) + P_5 * B_5(t)
    *
@@ -441,7 +449,10 @@ void Stepper::set_directions() {
    *  Unfortunately, we cannot use forward-differencing to calculate each position through
    *  the curve, as Marlin uses variable timer periods. So, we require a formula of the form:
    *
+   *  6th order:
    *        V_f(t) = A*t^5 + B*t^4 + C*t^3 + D*t^2 + E*t + F
+   *  4th order:
+   *        V_f(t) = A*t^3 + B*t^2 + C*t + F
    *
    *  Looking at the above B_0(t) through B_5(t) expanded forms, if we take the coefficients of t^5
    *  through t of the Bézier form of V(t), we can determine that:
@@ -464,21 +475,35 @@ void Stepper::set_directions() {
    *        E = 0
    *        F = P_i
    *
+   *  For 4th order we want the initial and final acceleration to be a fixed S_CURVE_FACTOR fraction
+   *  and solving gives us:
+   *
+   *        A = 2*(1 - S_CURVE_FACTOR)*(P_i - P_t)
+   *        B = 3*(1 - S_CURVE_FACTOR)*(P_t - P_i)
+   *        C = S_CURVE_FACTOR*(P_t - P_i)
+   *        F = P_i
+   *
    *  As the t is evaluated in non uniform steps here, there is no other way rather than evaluating
    *  the Bézier curve at each point:
    *
+   *  6th order:
    *        V_f(t) = A*t^5 + B*t^4 + C*t^3 + F          [0 <= t <= 1]
+   *  4th order:
+   *        V_f(t) = A*t^3 + B*t^2 + C*t + F            [0 <= t <= 1]
    *
    * Floating point arithmetic execution time cost is prohibitive, so we will transform the math to
-   * use fixed point values to be able to evaluate it in realtime. Assuming a maximum of 250000 steps
-   * per second (driver pulses should at least be 2µS hi/2µS lo), and allocating 2 bits to avoid
-   * overflows on the evaluation of the Bézier curve, means we can use
+   * use fixed point values to be able to evaluate it in realtime.
+   *
+   * 6th order: Assumes a maximum of 250000 steps/s (driver pulses down to 2µS hi/2µS lo),
+   * and allocates 2 bits to avoid overflows on the evaluation of the Bézier curve:
    *
    *   t: unsigned Q0.32 (0 <= t < 1) |range 0 to 0xFFFFFFFF unsigned
    *   A:   signed Q24.7 ,            |range = +/- 250000 * 6 * 128 = +/- 192000000 = 0x0B71B000 | 28 bits + sign
    *   B:   signed Q24.7 ,            |range = +/- 250000 *15 * 128 = +/- 480000000 = 0x1C9C3800 | 29 bits + sign
    *   C:   signed Q24.7 ,            |range = +/- 250000 *10 * 128 = +/- 320000000 = 0x1312D000 | 29 bits + sign
    *   F:   signed Q24.7 ,            |range = +/- 250000     * 128 =      32000000 = 0x01E84800 | 25 bits + sign
+   *
+   * 4th order: With B coefficient at least 5x smaller the maximum will be ~1250000 steps/s.
    *
    * The trapezoid generator state contains the following information, that we will use to create and evaluate
    * the Bézier curve:
@@ -494,9 +519,15 @@ void Stepper::set_directions() {
    *
    *    At the start of each trapezoid, calculate the coefficients A,B,C,F and Advance [AV], as follows:
    *
+   *  6th order:
    *      A =  6*128*(VF - VI) =  768*(VF - VI)
    *      B = 15*128*(VI - VF) = 1920*(VI - VF)
    *      C = 10*128*(VF - VI) = 1280*(VF - VI)
+   *  4th order:
+   *      A =  2*(1-S_CURVE_FACTOR)*128*(VI - VF)
+   *      B =  3*(1-S_CURVE_FACTOR)*128*(VF - VI)
+   *      C =  S_CURVE_FACTOR*128*(VF - VI)
+   *  both:
    *      F =    128*VI        =  128*VI
    *     AV = (1<<32)/TS      ~= 0xFFFFFFFF / TS (To use ARM UDIV, that is 32 bits) (this is computed at the planner, to offload expensive calculations from the ISR)
    *
@@ -1480,7 +1511,7 @@ uint32_t Stepper::stepper_block_phase_isr() {
       // Step events not completed yet...
 
       // Are we in acceleration phase ?
-      if (step_events_completed <= accelerate_until) { // Calculate new timer value
+      if (step_events_completed < accelerate_before) { // Calculate new timer value
 
         #if ENABLED(S_CURVE_ACCELERATION)
           // Get the next speed to use (Jerk limited!)
@@ -1498,6 +1529,7 @@ uint32_t Stepper::stepper_block_phase_isr() {
         // step_rate to timer interval and steps per stepper isr
         interval = calc_timer_interval(acc_step_rate, oversampling_factor, &steps_per_isr);
         acceleration_time += interval;
+        deceleration_time = 0;
 
         #if ENABLED(LIN_ADVANCE)
           if (LA_use_advance_lead) {
@@ -1508,7 +1540,7 @@ uint32_t Stepper::stepper_block_phase_isr() {
         #endif // LIN_ADVANCE
       }
       // Are we in Deceleration phase ?
-      else if (step_events_completed > decelerate_after) {
+      else if (step_events_completed >= decelerate_start) {
         uint32_t step_rate;
 
         #if ENABLED(S_CURVE_ACCELERATION)
@@ -1517,20 +1549,15 @@ uint32_t Stepper::stepper_block_phase_isr() {
             // Initialize the Bézier speed curve
             _calc_bezier_curve_coeffs(current_block->cruise_rate, current_block->final_rate, current_block->deceleration_time_inverse);
             bezier_2nd_half = true;
-            // The first point starts at cruise rate. Just save evaluation of the Bézier curve
-            step_rate = current_block->cruise_rate;
           }
-          else {
-            // Calculate the next speed to use
-            step_rate = deceleration_time < current_block->deceleration_time
-              ? _eval_bezier_curve(deceleration_time)
-              : current_block->final_rate;
-          }
+          // Calculate the next speed to use
+          step_rate = deceleration_time < current_block->deceleration_time
+            ? _eval_bezier_curve(deceleration_time)
+            : current_block->final_rate;
         #else
-
           // Using the old trapezoidal control
           step_rate = STEP_MULTIPLY(deceleration_time, current_block->acceleration_rate);
-          if (step_rate < acc_step_rate) { // Still decelerating?
+          if (step_rate < acc_step_rate) {
             step_rate = acc_step_rate - step_rate;
             NOLESS(step_rate, current_block->final_rate);
           }
@@ -1547,7 +1574,7 @@ uint32_t Stepper::stepper_block_phase_isr() {
         #if ENABLED(LIN_ADVANCE)
           if (LA_use_advance_lead) {
             // Wake up eISR on first deceleration loop and fire ISR if final adv_rate is reached
-            if (step_events_completed <= decelerate_after + steps_per_isr || (LA_steps && LA_isr_rate != current_block->advance_speed)) {
+            if (step_events_completed <= decelerate_start + steps_per_isr || (LA_steps && LA_isr_rate != current_block->advance_speed)) {
               nextAdvanceISR = 0;
               LA_isr_rate = current_block->advance_speed;
             }
@@ -1567,6 +1594,10 @@ uint32_t Stepper::stepper_block_phase_isr() {
         if (ticks_nominal < 0) {
           // step_rate to timer interval and loops for the nominal speed
           ticks_nominal = calc_timer_interval(current_block->nominal_rate, oversampling_factor, &steps_per_isr);
+          #if DISABLED(S_CURVE_ACCELERATION)
+            acc_step_rate = current_block->nominal_rate;
+          #endif
+          deceleration_time = ticks_nominal / 2;
         }
 
         // The timer interval is just the nominal value for the nominal speed
@@ -1594,8 +1625,9 @@ uint32_t Stepper::stepper_block_phase_isr() {
         planner.discard_current_block();
 
         // Try to get a new block
-        if (!(current_block = planner.get_current_block()))
+        if (!(current_block = planner.get_current_block())) {
           return interval; // No more queued movements!
+        }
       }
 
       // Flag all moving axes for proper endstop handling
@@ -1670,9 +1702,6 @@ uint32_t Stepper::stepper_block_phase_isr() {
       //if (!!current_block->steps[C_AXIS]) SBI(axis_bits, Z_HEAD);
       axis_did_move = axis_bits;
 
-      // No acceleration / deceleration time elapsed so far
-      acceleration_time = deceleration_time = 0;
-
       uint8_t oversampling = 0;                         // Assume we won't use it
 
       #if ENABLED(ADAPTIVE_STEP_SMOOTHING)
@@ -1716,8 +1745,8 @@ uint32_t Stepper::stepper_block_phase_isr() {
       step_events_completed = 0;
 
       // Compute the acceleration and deceleration points
-      accelerate_until = current_block->accelerate_until << oversampling;
-      decelerate_after = current_block->decelerate_after << oversampling;
+      accelerate_before = current_block->accelerate_before << oversampling;
+      decelerate_start = current_block->decelerate_start << oversampling;
 
       #if ENABLED(MIXING_EXTRUDER)
         const uint32_t e_steps = (
@@ -1798,6 +1827,8 @@ uint32_t Stepper::stepper_block_phase_isr() {
 
       // Calculate the initial timer interval
       interval = calc_timer_interval(current_block->initial_rate, oversampling_factor, &steps_per_isr);
+      // Initialize ac/deceleration time as if half the time passed.
+      acceleration_time = deceleration_time = interval / 2;
     }
   }
 
@@ -1812,13 +1843,13 @@ uint32_t Stepper::stepper_block_phase_isr() {
     uint32_t interval;
 
     if (LA_use_advance_lead) {
-      if (step_events_completed > decelerate_after && LA_current_adv_steps > LA_final_adv_steps) {
+      if (step_events_completed > decelerate_start && LA_current_adv_steps > LA_final_adv_steps) {
         LA_steps--;
         LA_current_adv_steps--;
         interval = LA_isr_rate;
       }
-      else if (step_events_completed < decelerate_after && LA_current_adv_steps < LA_max_adv_steps) {
-             //step_events_completed <= (uint32_t)accelerate_until) {
+      else if (step_events_completed < decelerate_start && LA_current_adv_steps < LA_max_adv_steps) {
+             //step_events_completed <= (uint32_t)accelerate_before) {
         LA_steps++;
         LA_current_adv_steps++;
         interval = LA_isr_rate;

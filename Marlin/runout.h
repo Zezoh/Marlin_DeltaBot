@@ -44,6 +44,10 @@ class FilamentRunoutSensor {
 
     FORCE_INLINE static void reset() { runout_count = 0; filament_ran_out = false; }
 
+    FORCE_INLINE static bool filament_present(const uint8_t extruder) {
+      return !filament_runout_state(extruder);
+    }
+
     FORCE_INLINE static void run() {
       if ((IS_SD_PRINTING() || print_job_timer.isRunning()) && check() && !filament_ran_out) {
         filament_ran_out = true;
@@ -55,27 +59,31 @@ class FilamentRunoutSensor {
     static bool filament_ran_out;
     static uint8_t runout_count;
 
-    FORCE_INLINE static bool check() {
+    FORCE_INLINE static bool filament_runout_state(const uint8_t extruder) {
       #if NUM_RUNOUT_SENSORS < 2
         // A single sensor applying to all extruders
-        const bool is_out = READ(FIL_RUNOUT_PIN) == FIL_RUNOUT_INVERTING;
+        return READ(FIL_RUNOUT_PIN) == FIL_RUNOUT_INVERTING;
       #else
         // Read the sensor for the active extruder
-        bool is_out;
-        switch (active_extruder) {
-          case 0: is_out = READ(FIL_RUNOUT_PIN) == FIL_RUNOUT_INVERTING; break;
-          case 1: is_out = READ(FIL_RUNOUT2_PIN) == FIL_RUNOUT_INVERTING; break;
+        switch (extruder) {
+          case 0: return READ(FIL_RUNOUT_PIN) == FIL_RUNOUT_INVERTING;
+          case 1: return READ(FIL_RUNOUT2_PIN) == FIL_RUNOUT_INVERTING;
           #if NUM_RUNOUT_SENSORS > 2
-            case 2: is_out = READ(FIL_RUNOUT3_PIN) == FIL_RUNOUT_INVERTING; break;
+            case 2: return READ(FIL_RUNOUT3_PIN) == FIL_RUNOUT_INVERTING;
             #if NUM_RUNOUT_SENSORS > 3
-              case 3: is_out = READ(FIL_RUNOUT4_PIN) == FIL_RUNOUT_INVERTING; break;
+              case 3: return READ(FIL_RUNOUT4_PIN) == FIL_RUNOUT_INVERTING;
               #if NUM_RUNOUT_SENSORS > 4
-                case 4: is_out = READ(FIL_RUNOUT5_PIN) == FIL_RUNOUT_INVERTING; break;
+                case 4: return READ(FIL_RUNOUT5_PIN) == FIL_RUNOUT_INVERTING;
               #endif
             #endif
           #endif
+          default: return READ(FIL_RUNOUT_PIN) == FIL_RUNOUT_INVERTING;
         }
       #endif
+    }
+
+    FORCE_INLINE static bool check() {
+      const bool is_out = filament_runout_state(active_extruder);
       return (is_out ? ++runout_count : (runout_count = 0)) > FIL_RUNOUT_THRESHOLD;
     }
 };

@@ -26,6 +26,7 @@
 
 #include "cardreader.h"
 
+#include "Marlin.h"
 #include "ultralcd.h"
 #include "stepper.h"
 #include "language.h"
@@ -48,6 +49,9 @@ CardReader::CardReader() {
   filesize = 0;
   sdpos = 0;
   file_subcall_ctr = 0;
+  #if ENABLED(SDCARD_AUTOCHECK)
+    autocheck_inserted = false;
+  #endif
 
   workDirDepth = 0;
   ZERO(workDirParents);
@@ -290,6 +294,53 @@ void CardReader::release() {
   cardOK = false;
 }
 
+#if ENABLED(SDCARD_AUTOCHECK)
+
+void CardReader::checkSDCard() {
+  const bool inserted = IS_SD_INSERTED();
+  if (inserted == autocheck_inserted) return;
+  delay(100);
+  autocheck_inserted = inserted;
+
+  if (inserted) {
+    beginautostart(); // Initial boot
+    if (!cardOK)
+      initsd();
+    if (cardOK) {
+      if (!isFileOpen()) {
+        const char filename[] = AUTO_PRINT_FILE_NAME;
+        openFile(filename, true, false, false);
+        if (!isFileOpen())
+          SERIAL_ECHOLNPGM("No file selected. Please upload file to SD.");
+      }
+      SERIAL_ECHOLNPGM(MSG_SD_INSERTED);
+    }
+    return;
+  }
+
+  #if ENABLED(ONE_BUTTON)
+    const bool is_active = printer_states.activity_state == ACTIVITY_PAUSED
+                           || printer_states.activity_state == ACTIVITY_PRINTING;
+  #else
+    const bool is_active = sdprinting || print_job_timer.isPaused();
+  #endif
+  if (is_active) {
+    abort_sd_printing = true;
+    SERIAL_ECHOLNPGM("Printing Aborted");
+    #if ENABLED(ONE_BUTTON)
+      printer_states.activity_state = ACTIVITY_IDLE;
+    #endif
+    release();
+  }
+  else {
+    closefile();
+    SERIAL_ECHOLNPGM(MSG_SD_REMOVED);
+    release();
+  }
+}
+
+#endif
+
 void CardReader::openAndPrintFile(const char *name) {
   char cmd[4 + strlen(name) + 1]; // Room for "M23 ", filename, and null
   sprintf_P(cmd, PSTR("M23 %s"), name);
@@ -347,7 +398,7 @@ void CardReader::getAbsFilename(char *t) {
   *t = '\0';
 }
 
-void CardReader::openFile(char * const path, const bool read, const bool subcall/*=false*/) {
+void CardReader::openFile(char * const path, const bool read, const bool subcall/*=false*/, const bool report_errors/*=true*/) {
 
   if (!cardOK) return;
 
@@ -411,7 +462,7 @@ void CardReader::openFile(char * const path, const bool read, const bool subcall
       //  SERIAL_PROTOCOLPAIR(MSG_SD_FILE_LONG_NAME, longFilename);
       //}
     }
-    else {
+    else if (report_errors) {
       SERIAL_PROTOCOLPAIR(MSG_SD_OPEN_FILE_FAIL, fname);
       SERIAL_PROTOCOLCHAR('.');
       SERIAL_EOL();
@@ -928,7 +979,8 @@ void CardReader::printingHasFinished() {
     millis_t current_ms = millis();
     if (auto_report_sd_interval && ELAPSED(current_ms, next_sd_report_ms)) {
       next_sd_report_ms = current_ms + 1000UL * auto_report_sd_interval;
-      getStatus();
+      if (sdprinting)
+        getStatus();
     }
   }
 #endif // AUTO_REPORT_SD_STATUS

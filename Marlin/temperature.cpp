@@ -207,18 +207,31 @@ int16_t Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TE
 #endif
 
 #if ENABLED(FSR_SENSOR)
-  bool Temperature::fsr_activation;
+  constexpr float Temperature::FSR_THRESHOLD_MIN;
+  constexpr float Temperature::FSR_THRESHOLD_MAX;
+
+  bool Temperature::fsr_activation = false;
   int16_t Temperature::current_fsr = 0;
-  float Temperature::fsr_previous = 0; 
-  float Temperature::fsr_bias = 0; 
+  float Temperature::fsr_previous = 0;
+  float Temperature::fsr_bias = 0;
   float Temperature::fsr_bias_probe = 0;
   float Temperature::fsr_threshold_ratio = FSR_THRESHOLD_RATIO;
-  
-  // New variables for improved FSR functionality
-  const float FSR_ALPHA = 0.3; // Smoothing factor for exponential moving average
+  bool Temperature::fsr_ready = false;
+  uint8_t Temperature::fsr_sample_count = 0;
+  uint8_t Temperature::fsr_sample_index = 0;
+
+  bool Temperature::set_fsr_threshold_ratio(const float ratio) {
+    const bool in_range = WITHIN(ratio, FSR_THRESHOLD_MIN, FSR_THRESHOLD_MAX);
+    float clamped_ratio = ratio;
+    if (clamped_ratio < FSR_THRESHOLD_MIN) clamped_ratio = FSR_THRESHOLD_MIN;
+    if (clamped_ratio > FSR_THRESHOLD_MAX) clamped_ratio = FSR_THRESHOLD_MAX;
+    fsr_threshold_ratio = clamped_ratio;
+    return in_range;
+  }
+
+  // FSR sampling configuration
   const int FSR_SAMPLES = 5; // Number of samples to average
   int16_t fsr_sample_buffer[FSR_SAMPLES] = {0};
-  int fsr_sample_index = 0;
 #endif
 
 #if HAS_AUTO_FAN || ENABLED(IS_MONO_FAN)
@@ -2279,12 +2292,22 @@ void Temperature::isr() {
         if (fsr_activation) {
           int16_t new_fsr_value = HAL_READ_ADC();
           
-          // Apply exponential moving average filter
-          current_fsr = (FSR_ALPHA * new_fsr_value) + ((1 - FSR_ALPHA) * current_fsr);
+          current_fsr = new_fsr_value;
           
           // Store in circular buffer
           fsr_sample_buffer[fsr_sample_index] = current_fsr;
           fsr_sample_index = (fsr_sample_index + 1) % FSR_SAMPLES;
+          if (fsr_sample_count < FSR_SAMPLES) {
+            fsr_sample_count++;
+            if (fsr_sample_count < FSR_SAMPLES) {
+              fsr_previous = current_fsr;
+              fsr_bias = 0.0;
+              fsr_bias_probe = 0.0;
+              fsr_ready = false;
+              break;
+            }
+          }
+          fsr_ready = true;
           
           // Calculate average of samples
           int32_t fsr_sum = 0;

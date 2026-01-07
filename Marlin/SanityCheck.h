@@ -216,6 +216,8 @@
   #error "BEEPER is now BEEPER_PIN. Please update your pins definitions."
 #elif defined(SDCARDDETECT)
   #error "SDCARDDETECT is now SD_DETECT_PIN. Please update your pins definitions."
+#elif ENABLED(SDCARD_AUTOCHECK) && !(PIN_EXISTS(SD_DETECT) || (SDSS > -1))
+  #error "SDCARD_AUTOCHECK requires SD_DETECT_PIN or SDSS."
 #elif defined(STAT_LED_RED) || defined(STAT_LED_BLUE)
   #error "STAT_LED_RED/STAT_LED_BLUE are now STAT_LED_RED_PIN/STAT_LED_BLUE_PIN. Please update your pins definitions."
 #elif defined(LCD_PIN_BL)
@@ -503,6 +505,13 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
   #endif
 #endif
 
+#if ENABLED(FILAMENT_AUTOLOAD) && DISABLED(FILAMENT_RUNOUT_SENSOR)
+  #error "FILAMENT_AUTOLOAD requires FILAMENT_RUNOUT_SENSOR."
+#endif
+#if ENABLED(FILAMENT_AUTOLOAD) && DISABLED(ONE_BUTTON)
+  #error "FILAMENT_AUTOLOAD requires ONE_BUTTON."
+#endif
+
 /**
  * Advanced Pause
  */
@@ -616,6 +625,13 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
     WITHIN(LIN_ADVANCE_K, 0, 10),
     "LIN_ADVANCE_K must be a value from 0 to 10 (Changed in LIN_ADVANCE v1.5, Marlin 1.1.9)."
   );
+#endif
+
+/**
+ * S_CURVE_ACCELERATION
+ */
+#if ENABLED(S_CURVE_ACCELERATION) && defined(S_CURVE_FACTOR)
+  static_assert(WITHIN(S_CURVE_FACTOR, 0, 1), "S_CURVE_FACTOR must be between 0.0 and 1.0.");
 #endif
 
 /**
@@ -744,6 +760,11 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
   #endif
 #endif
 
+#if ENABLED(DELTA_MOTION_OPTIMIZATION) && DISABLED(DELTA)
+  #error "DELTA_MOTION_OPTIMIZATION is only compatible with DELTA kinematics."
+#endif
+
+
 /**
  * Hangprinter requirements
  */
@@ -799,6 +820,13 @@ static_assert(X_MAX_LENGTH >= X_BED_SIZE && Y_MAX_LENGTH >= Y_BED_SIZE,
 #endif
 
 #if HAS_BED_PROBE
+
+  /**
+   * FSR probe requires a fixed mount
+   */
+  #if ENABLED(FSR_SENSOR) && DISABLED(FIX_MOUNTED_PROBE)
+    #error "FSR_SENSOR requires FIX_MOUNTED_PROBE."
+  #endif
 
   /**
    * Z_PROBE_SLED is incompatible with DELTA
@@ -1692,8 +1720,8 @@ static_assert(COUNT(sanity_arr_3) <= NUM_AXIS_N, "DEFAULT_MAX_ACCELERATION has t
   #error "CNC_COORDINATE_SYSTEMS is incompatible with NO_WORKSPACE_OFFSETS."
 #endif
 
-#if !BLOCK_BUFFER_SIZE || !IS_POWER_OF_2(BLOCK_BUFFER_SIZE)
-  #error "BLOCK_BUFFER_SIZE must be a power of 2."
+#if BLOCK_BUFFER_SIZE < 2
+  #error "BLOCK_BUFFER_SIZE must be 2 or greater."
 #endif
 
 #if ENABLED(LED_CONTROL_MENU) && DISABLED(ULTIPANEL)

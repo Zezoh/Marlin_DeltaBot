@@ -37,7 +37,7 @@
  */
 
 // Change EEPROM version if the structure changes
-#define EEPROM_VERSION "V56"
+#define EEPROM_VERSION "V60"
 #define EEPROM_OFFSET 100
 
 // Check the integrity of data offsets.
@@ -483,6 +483,7 @@ void MarlinSettings::postprocess() {
       dummy = 0.02f;
       EEPROM_WRITE(dummy);
     #endif
+
 
     _FIELD_TEST(home_offset);
 
@@ -1115,6 +1116,7 @@ void MarlinSettings::postprocess() {
         EEPROM_READ(dummy);
       #endif
 
+
       //
       // Home Offset (M206)
       //
@@ -1179,10 +1181,11 @@ void MarlinSettings::postprocess() {
         EEPROM_READ(zprobe_zoffset);
 
       //
-      // FSR Sensor for  Bed 
+      // FSR Sensor for  Bed
       //
-	  #if ENABLED(FSR_SENSOR)
+      #if ENABLED(FSR_SENSOR)
         EEPROM_READ(thermalManager.fsr_threshold_ratio);
+        thermalManager.set_fsr_threshold_ratio(thermalManager.fsr_threshold_ratio);
       #endif
 
       //
@@ -1857,6 +1860,7 @@ void MarlinSettings::reset() {
     planner.max_jerk[E_AXIS] = DEFAULT_EJERK;
   #endif
 
+
   #if HAS_HOME_OFFSET
     ZERO(home_offset);
   #endif
@@ -1895,7 +1899,7 @@ void MarlinSettings::reset() {
   #endif
 
   #if ENABLED(FSR_SENSOR)
-    thermalManager.fsr_threshold_ratio = FSR_THRESHOLD_RATIO;
+    thermalManager.set_fsr_threshold_ratio(FSR_THRESHOLD_RATIO);
   #endif
 
   #if ENABLED(DELTA)

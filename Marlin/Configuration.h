@@ -39,9 +39,6 @@
 #define CONFIGURATION_H
 #define CONFIGURATION_H_VERSION 010109
 
-#define FSR_SENSOR
-#define FSR_THRESHOLD_RATIO -1.5
-
 //#define SD_AUTOOPEN_MENU
 
 #define IS_MONO_FAN
@@ -53,17 +50,9 @@
 
 #define ONE_BUTTON
 #define ONE_BUTTON_INVERTING true
-#define ONE_BUTTON_ROTARY  // Use a dedicated KY-040 rotary on the default RAMPS 1.4 pins
+//#define ONE_BUTTON_ROTARY  // Use a dedicated KY-040 rotary on the default RAMPS 1.4 pins
 #define ONE_BUTTON_ROTARY_DEBOUNCE 2   // Minimum milliseconds between rotary state changes
 #define STEPS_PER_ROTATION 0.025f      // Z move per rotary tick (mm)
-
-//#define SDCARD_AUTOCHECK
-//#define SDCARD_DETECT_PIN 31
-//#define SDCARD_INVERTING true
-
-// For users using a filament sensor near the extruder like the Prusa Extruder
-// enable this feature to trigger a loading sequence
-#define FILAMENT_AUTOLOAD
 
 //===========================================================================
 //============================= Getting Started =============================
@@ -544,17 +533,21 @@
 
   // Make delta curves from many straight lines (linear interpolation).
   // This is a trade-off between visible corners (not enough segments)
-  // and processor overload (too many expensive sqrt calls). Trimmed for AVR
-  // builds to keep the 16MHz ATmega2560 motion planner responsive.
+  // and processor overload (too many expensive sqrt calls).
   #define DELTA_SEGMENTS_PER_SECOND 80
-  
+
+  // Limit segment granularity to reduce planner load.
+  #define KINEMATIC_SEGMENT_MIN_LENGTH 0.25 // mm
 
   //Fast inverse sqrt from Quake III Arena                                                
   //See: https://en.wikipedia.org/wiki/Fast_inverse_square_root                                                                                                               
   #define DELTA_FAST_SQRT
 
   // Convert feedrates to apply to the Effector instead of the Carriages
-  #define DELTA_FEEDRATE_SCALING
+  //#define DELTA_FEEDRATE_SCALING
+
+  // Optional tower-motion cornering slowdown for smoother delta movement
+  //#define DELTA_MOTION_OPTIMIZATION
 
   // After homing move down to a height where XY movement is unconstrained
   //#define DELTA_HOME_TO_SAFE_ZONE
@@ -777,6 +770,11 @@
  * See https://github.com/synthetos/TinyG/wiki/Jerk-Controlled-Motion-Explained
  */
 #define S_CURVE_ACCELERATION
+#if ENABLED(S_CURVE_ACCELERATION)
+  // Define to use 4th instead of 6th order motion curve
+  //#define S_CURVE_FACTOR 0.25    // Initial and final acceleration factor, ideally 0.1 to 0.4.
+                                   // Shouldn't generally require tuning.
+#endif
 
 //===========================================================================
 //============================= Z Probe Options =============================
@@ -847,6 +845,11 @@
  */
 //#define BLTOUCH
 
+/**
+ * Force Sensing Resistor (FSR) Z probe
+ */
+#define FSR_SENSOR
+#define FSR_THRESHOLD_RATIO -1.5
 
 /**
  * Enable one or more of the following if probing seems unreliable.
@@ -1022,7 +1025,7 @@
 // @section extruder
 
 // For direct drive extruder v9 set to true, for geared extruder set to false.
-#define INVERT_E0_DIR true
+#define INVERT_E0_DIR false
 #define INVERT_E1_DIR false
 #define INVERT_E2_DIR false
 #define INVERT_E3_DIR false
@@ -1097,9 +1100,12 @@
 #define FILAMENT_RUNOUT_SENSOR
 #if ENABLED(FILAMENT_RUNOUT_SENSOR)
   #define NUM_RUNOUT_SENSORS   1     // Number of sensors, up to one per extruder. Define a FIL_RUNOUT#_PIN for each.
-  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+  #define FIL_RUNOUT_INVERTING true // set to true to invert the logic of the sensor.
   #define FIL_RUNOUT_PULLUP          // Use internal pullup for filament runout pins.
   #define FILAMENT_RUNOUT_SCRIPT "M600"
+  // For users using a filament sensor near the extruder like the Prusa Extruder
+  // enable this feature to trigger a loading sequence
+  #define FILAMENT_AUTOLOAD
 #endif
 
 //===========================================================================
@@ -1596,6 +1602,19 @@
  *
  */
 #define SDSUPPORT
+
+/**
+ * SD CARD: AUTO CHECK
+ */
+//#define SDCARD_AUTOCHECK
+// SD_DETECT_INVERTED is configured in Configuration_adv.h
+
+/**
+ * SD CARD: AUTO PRINT FILE NAME
+ *
+ * File to auto-start if present on SD.
+ */
+#define AUTO_PRINT_FILE_NAME "dagoma0.g"
 
 /**
  * SD CARD: SPI SPEED
