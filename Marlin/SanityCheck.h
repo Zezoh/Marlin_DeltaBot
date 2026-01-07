@@ -216,6 +216,8 @@
   #error "BEEPER is now BEEPER_PIN. Please update your pins definitions."
 #elif defined(SDCARDDETECT)
   #error "SDCARDDETECT is now SD_DETECT_PIN. Please update your pins definitions."
+#elif ENABLED(SDCARD_AUTOCHECK) && !(PIN_EXISTS(SD_DETECT) || (SDSS > -1))
+  #error "SDCARD_AUTOCHECK requires SD_DETECT_PIN or SDSS."
 #elif defined(STAT_LED_RED) || defined(STAT_LED_BLUE)
   #error "STAT_LED_RED/STAT_LED_BLUE are now STAT_LED_RED_PIN/STAT_LED_BLUE_PIN. Please update your pins definitions."
 #elif defined(LCD_PIN_BL)

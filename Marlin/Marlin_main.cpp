@@ -15494,6 +15494,23 @@ inline void line_to_z(const float &z) {
   planner.buffer_line_kinematic(current_position, planner.max_feedrate_mm_s[Z_AXIS] / 2, active_extruder);
 }
 
+#if DISABLED(SDCARD_AUTOCHECK)
+  inline void check_sd_content_once() {
+    if (!card.cardOK)
+      card.initsd();
+    if (card.cardOK && !card.isFileOpen()) {
+      char filename[] = "dagoma0.g";
+      card.openFile(filename, true, false, false);
+      if (!card.isFileOpen())
+        SERIAL_ECHOLNPGM("No file selected. Please upload file to SD.");
+    }
+  }
+
+  inline void one_button_check_sd_content() {
+    check_sd_content_once();
+  }
+#endif
+
 inline void manage_one_button_actions() {
   #if ENABLED(ONE_BUTTON_ROTARY)
     #if ENABLED(DOUBLECLICK_FOR_Z_BABYSTEPPING_ROTARY) && ENABLED(BABYSTEPPING)
@@ -15532,6 +15549,9 @@ inline void manage_one_button_actions() {
           }
 
           if (FILAMENT_PRESENT) {
+            #if DISABLED(SDCARD_AUTOCHECK)
+              one_button_check_sd_content();
+            #endif
             if (card.cardOK) {
               if (card.isFileOpen()) {
                 enqueue_and_echo_commands_P(PSTR("M24"));
@@ -15998,7 +16018,9 @@ void setup() {
   #endif
 	
   #if ENABLED(SDCARD_AUTOCHECK)
-	SET_INPUT_PULLUP(SDCARD_DETECT_PIN);
+    #ifdef SD_AUTOCHECK_PIN
+      SET_INPUT_PULLUP(SD_AUTOCHECK_PIN);
+    #endif
   #endif
   
   // one button delta calibration
@@ -16262,6 +16284,10 @@ void setup() {
     enable_B();
     enable_C();
     enable_D();
+  #endif
+
+  #if ENABLED(SDSUPPORT) && DISABLED(SDCARD_AUTOCHECK)
+    check_sd_content_once();
   #endif
 
   #if ENABLED(SDSUPPORT) && !(ENABLED(ULTRA_LCD) && PIN_EXISTS(SD_DETECT)) && DISABLED(ONE_BUTTON)

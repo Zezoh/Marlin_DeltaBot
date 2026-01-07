@@ -43,7 +43,7 @@ public:
   void beginautostart();
   void checkautostart();
 
-  void openFile(char * const path, const bool read, const bool subcall=false);
+  void openFile(char * const path, const bool read, const bool subcall=false, const bool report_errors=true);
   void openLogFile(char * const path);
   void removeFile(const char * const name);
   void closefile(const bool store_location=false);
@@ -213,10 +213,20 @@ private:
 };
 
 #if PIN_EXISTS(SD_DETECT)
-  #if ENABLED(SD_DETECT_INVERTED)
-    #define IS_SD_INSERTED()  READ(SD_DETECT_PIN)
+  #define SD_AUTOCHECK_PIN SD_DETECT_PIN
+#endif
+
+#if ENABLED(SDCARD_AUTOCHECK) && defined(SDCARD_AUTOCHECK_INVERTING)
+  #define SD_AUTOCHECK_INVERTED true
+#elif ENABLED(SD_DETECT_INVERTED)
+  #define SD_AUTOCHECK_INVERTED true
+#endif
+
+#ifdef SD_AUTOCHECK_PIN
+  #if defined(SD_AUTOCHECK_INVERTED)
+    #define IS_SD_INSERTED()  READ(SD_AUTOCHECK_PIN)
   #else
-    #define IS_SD_INSERTED() !READ(SD_DETECT_PIN)
+    #define IS_SD_INSERTED() !READ(SD_AUTOCHECK_PIN)
   #endif
 #else
   // No card detect line? Assume the card is inserted.
