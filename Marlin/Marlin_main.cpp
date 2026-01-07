@@ -16335,14 +16335,16 @@ void loop() {
   #endif // SDSUPPORT
 
   #if ENABLED(SDSUPPORT) && DISABLED(SDCARD_AUTOCHECK)
-    static bool sd_autoprint_checked = false;
-    if (!sd_autoprint_checked
-        && printer_states.activity_state == ACTIVITY_IDLE
-        && commands_in_queue == 0
-    ) {
-      check_sd_content_once();
-      sd_autoprint_checked = true;
-    }
+    #if ENABLED(ONE_BUTTON)
+      static bool sd_autoprint_checked = false;
+      if (!sd_autoprint_checked
+          && printer_states.activity_state == ACTIVITY_IDLE
+          && commands_in_queue == 0
+      ) {
+        check_sd_content_once();
+        sd_autoprint_checked = true;
+      }
+    #endif
   #endif
 
   if (commands_in_queue < BUFSIZE) get_available_commands();
