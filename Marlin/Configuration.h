@@ -845,11 +845,6 @@
  */
 //#define BLTOUCH
 
-/**
- * Force Sensing Resistor (FSR) Z probe
- */
-#define FSR_SENSOR
-#define FSR_THRESHOLD_RATIO -1.5
 
 /**
  * Enable one or more of the following if probing seems unreliable.

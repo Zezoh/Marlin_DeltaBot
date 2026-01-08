@@ -206,34 +206,6 @@ int16_t Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TE
   int8_t Temperature::meas_shift_index;  // Index of a delayed sample in buffer
 #endif
 
-#if ENABLED(FSR_SENSOR)
-  constexpr float Temperature::FSR_THRESHOLD_MIN;
-  constexpr float Temperature::FSR_THRESHOLD_MAX;
-
-  bool Temperature::fsr_activation = false;
-  int16_t Temperature::current_fsr = 0;
-  float Temperature::fsr_previous = 0;
-  float Temperature::fsr_bias = 0;
-  float Temperature::fsr_bias_probe = 0;
-  float Temperature::fsr_threshold_ratio = FSR_THRESHOLD_RATIO;
-  bool Temperature::fsr_ready = false;
-  uint8_t Temperature::fsr_sample_count = 0;
-  uint8_t Temperature::fsr_sample_index = 0;
-
-  bool Temperature::set_fsr_threshold_ratio(const float ratio) {
-    const bool in_range = WITHIN(ratio, FSR_THRESHOLD_MIN, FSR_THRESHOLD_MAX);
-    float clamped_ratio = ratio;
-    if (clamped_ratio < FSR_THRESHOLD_MIN) clamped_ratio = FSR_THRESHOLD_MIN;
-    if (clamped_ratio > FSR_THRESHOLD_MAX) clamped_ratio = FSR_THRESHOLD_MAX;
-    fsr_threshold_ratio = clamped_ratio;
-    return in_range;
-  }
-
-  // FSR sampling configuration
-  const int FSR_SAMPLES = 5; // Number of samples to average
-  int16_t fsr_sample_buffer[FSR_SAMPLES] = {0};
-#endif
-
 #if HAS_AUTO_FAN || ENABLED(IS_MONO_FAN)
   millis_t Temperature::next_auto_fan_check_ms = 0;
 #endif
@@ -1214,9 +1186,6 @@ void Temperature::init() {
   #endif
   #if ENABLED(FILAMENT_WIDTH_SENSOR)
     HAL_ANALOG_SELECT(FILWIDTH_PIN);
-  #endif
-  #if ENABLED(FSR_SENSOR)
-    HAL_ANALOG_SELECT(FSR_PIN);
   #endif
 
   HAL_timer_start(TEMP_TIMER_NUM, TEMP_TIMER_FREQUENCY);
@@ -2282,53 +2251,6 @@ void Temperature::isr() {
           raw_filwidth_value += uint32_t(HAL_READ_ADC()) << 7; // Add new ADC reading, scaled by 128
         }
       break;
-    #endif
-
-    #if ENABLED(FSR_SENSOR)
-      case Prepare_FSR:
-        HAL_START_ADC(FSR_PIN);
-        break;
-      case Measure_FSR:
-        if (fsr_activation) {
-          int16_t new_fsr_value = HAL_READ_ADC();
-          
-          current_fsr = new_fsr_value;
-          
-          // Store in circular buffer
-          fsr_sample_buffer[fsr_sample_index] = current_fsr;
-          fsr_sample_index = (fsr_sample_index + 1) % FSR_SAMPLES;
-          if (fsr_sample_count < FSR_SAMPLES) {
-            fsr_sample_count++;
-            if (fsr_sample_count < FSR_SAMPLES) {
-              fsr_previous = current_fsr;
-              fsr_bias = 0.0;
-              fsr_bias_probe = 0.0;
-              fsr_ready = false;
-              break;
-            }
-          }
-          fsr_ready = true;
-          
-          // Calculate average of samples
-          int32_t fsr_sum = 0;
-          for (int i = 0; i < FSR_SAMPLES; i++) {
-            fsr_sum += fsr_sample_buffer[i];
-          }
-          int16_t fsr_average = fsr_sum / FSR_SAMPLES;
-          
-          // Calculate bias
-          fsr_bias = fsr_average - fsr_previous;
-          fsr_previous = fsr_average;
-          fsr_bias_probe += fsr_bias;
-          
-          if (DEBUGGING(INFO)) {
-            SERIAL_ECHOPAIR(" FSR Avg: ", fsr_average);
-            SERIAL_ECHOPAIR(" FSR Bias: ", fsr_bias);
-            SERIAL_ECHOPAIR(" FSR Bias Probe: ", fsr_bias_probe);
-            SERIAL_EOL();
-          }
-        }
-        break;
     #endif
 
     #if ENABLED(ADC_KEYPAD)

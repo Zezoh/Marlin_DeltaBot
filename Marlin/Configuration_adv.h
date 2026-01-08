@@ -874,6 +874,11 @@
   #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
 #endif
 
+// @section probing
+
+#define FSR_SENSOR
+#define FSR_ADC_PIN A15   // user-defined wiring pin
+
 // Moves (or segments) with fewer steps than this will be joined with the next move
 #define MIN_STEPS_PER_SEGMENT 6
 

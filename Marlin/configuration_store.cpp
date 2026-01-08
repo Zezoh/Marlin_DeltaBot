@@ -37,7 +37,7 @@
  */
 
 // Change EEPROM version if the structure changes
-#define EEPROM_VERSION "V60"
+#define EEPROM_VERSION "V61"
 #define EEPROM_OFFSET 100
 
 // Check the integrity of data offsets.
@@ -54,6 +54,9 @@
 #include "stepper.h"
 #include "parser.h"
 #include "vector_3.h"
+#if ENABLED(FSR_SENSOR)
+  #include "fsr_auto.h"
+#endif
 
 #if ENABLED(MESH_BED_LEVELING)
   #include "mesh_bed_leveling.h"
@@ -79,6 +82,10 @@
 
 #if ENABLED(BLTOUCH)
   extern bool bltouch_last_written_mode;
+#endif
+
+#if ENABLED(FSR_SENSOR)
+  extern FSRModel fsr_model;
 #endif
 
 #pragma pack(push, 1) // No padding between variables
@@ -143,9 +150,9 @@ typedef struct SettingsDataStruct {
   //
   // FSR Sensor
   //
-  
+
   #if ENABLED(FSR_SENSOR)
-    float thermalManager_fsr_threshold_ratio;           // M853 V thermalManager.fsr_threshold_ratio
+    FSRModel fsr_model;
   #endif                               
 
   //
@@ -539,9 +546,9 @@ void MarlinSettings::postprocess() {
       const float zprobe_zoffset = 0;
     #endif
     EEPROM_WRITE(zprobe_zoffset);
-	
-	#if ENABLED(FSR_SENSOR)
-      EEPROM_WRITE(thermalManager.fsr_threshold_ratio);
+
+    #if ENABLED(FSR_SENSOR)
+      EEPROM_WRITE(fsr_model);
     #endif
 
     //
@@ -1181,11 +1188,10 @@ void MarlinSettings::postprocess() {
         EEPROM_READ(zprobe_zoffset);
 
       //
-      // FSR Sensor for  Bed
+      // FSR Sensor
       //
       #if ENABLED(FSR_SENSOR)
-        EEPROM_READ(thermalManager.fsr_threshold_ratio);
-        thermalManager.set_fsr_threshold_ratio(thermalManager.fsr_threshold_ratio);
+        EEPROM_READ(fsr_model);
       #endif
 
       //
@@ -1899,7 +1905,15 @@ void MarlinSettings::reset() {
   #endif
 
   #if ENABLED(FSR_SENSOR)
-    thermalManager.set_fsr_threshold_ratio(FSR_THRESHOLD_RATIO);
+    fsr_model.version = FSR_MODEL_VERSION;
+    fsr_model.valid = 0;
+    fsr_model.trig_offset_adc = 0;
+    fsr_model.min_offset_adc = 0;
+    fsr_model.slope_adc = 0;
+    fsr_model.debounce = 0;
+    fsr_model.noise_pp = 0;
+    fsr_model.slope_noise = 0;
+    fsr_model.amp_adc = 0;
   #endif
 
   #if ENABLED(DELTA)
@@ -2593,18 +2607,6 @@ void MarlinSettings::reset() {
       }
       CONFIG_ECHO_START;
       SERIAL_ECHOLNPAIR("  M851 Z", LINEAR_UNIT(zprobe_zoffset));
-    #endif
-
-    /**
-     * FSR Sensor
-     */
-	#if ENABLED(FSR_SENSOR)
-      if (!forReplay) {
-        CONFIG_ECHO_START;
-        SERIAL_ECHOLNPGM("FSR Threshold Ratio:");
-      }
-	  CONFIG_ECHO_START;
-	  SERIAL_ECHOLNPAIR("  M853 V", thermalManager.fsr_threshold_ratio);
     #endif
 
     /**

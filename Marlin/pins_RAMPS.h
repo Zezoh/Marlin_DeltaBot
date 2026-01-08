@@ -237,16 +237,11 @@
 #endif
 
 //
-// Temperature and FSR Sensors
+// Temperature Sensors
 //
 #define TEMP_0_PIN         13   // Analog Input
 #define TEMP_1_PIN         14   // Analog Input
-
-#if ENABLED (FSR_SENSOR)
-  #define FSR_PIN          15   // Analog Input
-#else
-  #define TEMP_BED_PIN     15   // Analog Input
-#endif
+#define TEMP_BED_PIN       15   // Analog Input
 
 // SPI for Max6675 or Max31855 Thermocouple
 #if DISABLED(SDSUPPORT)
