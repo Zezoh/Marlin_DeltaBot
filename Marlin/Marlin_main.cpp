@@ -6116,6 +6116,11 @@ void home_all_axes() { gcode_G28(true); }
 
         setup_for_endstop_or_probe_move();
 
+        #if ENABLED(PROBING_HEATERS_OFF)
+          const bool keep_heaters_on = parser.seen('H');
+          if (!keep_heaters_on) thermalManager.pause(true);
+        #endif
+
         const bool was_endstops_enabled = endstops.enabled;
         const bool was_z_probe_enabled = endstops.z_probe_enabled;
         endstops.enable(true);
@@ -6129,6 +6134,10 @@ void home_all_axes() { gcode_G28(true); }
 
         endstops.enable(was_endstops_enabled);
         endstops.enable_z_probe(was_z_probe_enabled);
+
+        #if ENABLED(PROBING_HEATERS_OFF)
+          if (!keep_heaters_on) thermalManager.pause(false);
+        #endif
 
         clean_up_after_endstop_or_probe_move();
         if (!cal_ok) {
