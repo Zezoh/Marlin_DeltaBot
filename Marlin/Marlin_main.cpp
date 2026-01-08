@@ -2679,16 +2679,19 @@ void clean_up_after_endstop_or_probe_move() {
       float z_tolerance = 0.03;
       float z_read[3] = {67.0};
       float z_avg = 0.0;
+      #if ENABLED(FSR_SENSOR)
+        float fsr_trigger_values[3] = { 0 };
+      #endif
       int adjust_fsr_threshold = 0;
 
       do {
 
         if (adjust_fsr_threshold > 5) {
-          const float requested_ratio = thermalManager.fsr_threshold_ratio - 0.15f;
-          const bool clamped = !thermalManager.set_fsr_threshold_ratio(requested_ratio);
+          const float requested_slope = thermalManager.fsr_slope_threshold - 1.0f;
+          const bool clamped = !thermalManager.set_fsr_slope_threshold(requested_slope);
           if (clamped) thermalManager.resetThreshold();
-          SERIAL_ECHOPGM("New fsr threshold: ");
-          SERIAL_ECHOLN(thermalManager.fsr_threshold_ratio);
+          SERIAL_ECHOPGM("New FSR slope threshold: ");
+          SERIAL_ECHOLN(thermalManager.fsr_slope_threshold);
           adjust_fsr_threshold = 0;
         }
 
@@ -2711,6 +2714,12 @@ void clean_up_after_endstop_or_probe_move() {
         z_read[1] = z_read[0];
         z_read[0] = current_position[Z_AXIS];
 
+        #if ENABLED(FSR_SENSOR)
+          fsr_trigger_values[2] = fsr_trigger_values[1];
+          fsr_trigger_values[1] = fsr_trigger_values[0];
+          fsr_trigger_values[0] = thermalManager.fsr_delta;
+        #endif
+
         do_blocking_move_to_z(current_position[Z_AXIS] + Z_CLEARANCE_MULTI_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_SLOW*2));
 
         adjust_fsr_threshold += 1;
@@ -2731,6 +2740,14 @@ void clean_up_after_endstop_or_probe_move() {
             abs(z_read[2] - z_avg) < z_tolerance;
         }
       } while (!all_points_are_good);
+
+      #if ENABLED(FSR_SENSOR)
+        const float fsr_min = MIN3(fsr_trigger_values[0], fsr_trigger_values[1], fsr_trigger_values[2]);
+        const float fsr_max = MAX3(fsr_trigger_values[0], fsr_trigger_values[1], fsr_trigger_values[2]);
+        const float fsr_trigger_avg = (fsr_trigger_values[0] + fsr_trigger_values[1] + fsr_trigger_values[2] - fsr_min - fsr_max);
+        const float fsr_threshold = fsr_trigger_avg * FSR_SAFETY_FACTOR;
+        if (fsr_threshold > 0.0f) thermalManager.set_fsr_slope_threshold(fsr_threshold);
+      #endif
 
       adjust_fsr_threshold = 0;
     #endif
@@ -11424,26 +11441,54 @@ inline void gcode_M502() {
 
 #if ENABLED(FSR_SENSOR)
   inline void gcode_M853() {
-    const bool has_value = parser.seen('V');
-    if (has_value) {
-      const float requested_ratio = parser.value_float();
-      const bool in_range = thermalManager.set_fsr_threshold_ratio(requested_ratio);
-      SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
+    const bool has_slope = parser.seen('S');
+    const bool has_offset = parser.seen('O');
+    const bool has_legacy = parser.seen('V');
+    bool reported = false;
+
+    if (has_slope || has_legacy) {
+      const float requested_slope = has_slope ? parser.floatval('S') : parser.floatval('V');
+      const bool in_range = thermalManager.set_fsr_slope_threshold(requested_slope);
+      SERIAL_ECHOPAIR("FSR Slope Threshold = ", thermalManager.fsr_slope_threshold);
       if (!in_range) {
         SERIAL_ECHOPGM(" (clamped to ");
-        SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MIN, 2);
+        SERIAL_ECHO_F(Temperature::FSR_SLOPE_THRESHOLD_MIN, 2);
         SERIAL_ECHOPGM("..");
-        SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MAX, 2);
+        SERIAL_ECHO_F(Temperature::FSR_SLOPE_THRESHOLD_MAX, 2);
         SERIAL_CHAR(')');
       }
       SERIAL_EOL();
+      reported = true;
     }
-    else {
-      SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
+
+    if (has_offset) {
+      const float requested_offset = parser.floatval('O');
+      const bool in_range = thermalManager.set_fsr_min_offset(requested_offset);
+      SERIAL_ECHOPAIR("FSR Min Offset = ", thermalManager.fsr_min_offset);
+      if (!in_range) {
+        SERIAL_ECHOPGM(" (clamped to ");
+        SERIAL_ECHO_F(Temperature::FSR_MIN_OFFSET_MIN, 2);
+        SERIAL_ECHOPGM("..");
+        SERIAL_ECHO_F(Temperature::FSR_MIN_OFFSET_MAX, 2);
+        SERIAL_CHAR(')');
+      }
+      SERIAL_EOL();
+      reported = true;
+    }
+
+    if (!reported) {
+      SERIAL_ECHOPAIR("FSR Slope Threshold = ", thermalManager.fsr_slope_threshold);
       SERIAL_ECHOPGM(" (range ");
-      SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MIN, 2);
+      SERIAL_ECHO_F(Temperature::FSR_SLOPE_THRESHOLD_MIN, 2);
       SERIAL_ECHOPGM("..");
-      SERIAL_ECHO_F(Temperature::FSR_THRESHOLD_MAX, 2);
+      SERIAL_ECHO_F(Temperature::FSR_SLOPE_THRESHOLD_MAX, 2);
+      SERIAL_CHAR(')');
+      SERIAL_EOL();
+      SERIAL_ECHOPAIR("FSR Min Offset = ", thermalManager.fsr_min_offset);
+      SERIAL_ECHOPGM(" (range ");
+      SERIAL_ECHO_F(Temperature::FSR_MIN_OFFSET_MIN, 2);
+      SERIAL_ECHOPGM("..");
+      SERIAL_ECHO_F(Temperature::FSR_MIN_OFFSET_MAX, 2);
       SERIAL_CHAR(')');
       SERIAL_EOL();
     }

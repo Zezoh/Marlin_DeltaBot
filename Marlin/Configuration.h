@@ -849,7 +849,9 @@
  * Force Sensing Resistor (FSR) Z probe
  */
 #define FSR_SENSOR
-#define FSR_THRESHOLD_RATIO -1.5
+#define FSR_SLOPE_THRESHOLD 15.0
+#define FSR_MIN_OFFSET 10.0
+#define FSR_SAFETY_FACTOR 0.92
 
 /**
  * Enable one or more of the following if probing seems unreliable.

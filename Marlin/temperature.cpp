@@ -207,25 +207,37 @@ int16_t Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TE
 #endif
 
 #if ENABLED(FSR_SENSOR)
-  constexpr float Temperature::FSR_THRESHOLD_MIN;
-  constexpr float Temperature::FSR_THRESHOLD_MAX;
+  constexpr float Temperature::FSR_SLOPE_THRESHOLD_MIN;
+  constexpr float Temperature::FSR_SLOPE_THRESHOLD_MAX;
+  constexpr float Temperature::FSR_MIN_OFFSET_MIN;
+  constexpr float Temperature::FSR_MIN_OFFSET_MAX;
 
   bool Temperature::fsr_activation = false;
   int16_t Temperature::current_fsr = 0;
   float Temperature::fsr_previous = 0;
-  float Temperature::fsr_bias = 0;
-  float Temperature::fsr_bias_probe = 0;
-  float Temperature::fsr_threshold_ratio = FSR_THRESHOLD_RATIO;
+  float Temperature::fsr_baseline = 0;
+  float Temperature::fsr_delta = 0;
+  float Temperature::fsr_slope_threshold = FSR_SLOPE_THRESHOLD;
+  float Temperature::fsr_min_offset = FSR_MIN_OFFSET;
   bool Temperature::fsr_ready = false;
   uint8_t Temperature::fsr_sample_count = 0;
   uint8_t Temperature::fsr_sample_index = 0;
 
-  bool Temperature::set_fsr_threshold_ratio(const float ratio) {
-    const bool in_range = WITHIN(ratio, FSR_THRESHOLD_MIN, FSR_THRESHOLD_MAX);
-    float clamped_ratio = ratio;
-    if (clamped_ratio < FSR_THRESHOLD_MIN) clamped_ratio = FSR_THRESHOLD_MIN;
-    if (clamped_ratio > FSR_THRESHOLD_MAX) clamped_ratio = FSR_THRESHOLD_MAX;
-    fsr_threshold_ratio = clamped_ratio;
+  bool Temperature::set_fsr_slope_threshold(const float slope) {
+    const bool in_range = WITHIN(slope, FSR_SLOPE_THRESHOLD_MIN, FSR_SLOPE_THRESHOLD_MAX);
+    float clamped_slope = slope;
+    if (clamped_slope < FSR_SLOPE_THRESHOLD_MIN) clamped_slope = FSR_SLOPE_THRESHOLD_MIN;
+    if (clamped_slope > FSR_SLOPE_THRESHOLD_MAX) clamped_slope = FSR_SLOPE_THRESHOLD_MAX;
+    fsr_slope_threshold = clamped_slope;
+    return in_range;
+  }
+
+  bool Temperature::set_fsr_min_offset(const float offset) {
+    const bool in_range = WITHIN(offset, FSR_MIN_OFFSET_MIN, FSR_MIN_OFFSET_MAX);
+    float clamped_offset = offset;
+    if (clamped_offset < FSR_MIN_OFFSET_MIN) clamped_offset = FSR_MIN_OFFSET_MIN;
+    if (clamped_offset > FSR_MIN_OFFSET_MAX) clamped_offset = FSR_MIN_OFFSET_MAX;
+    fsr_min_offset = clamped_offset;
     return in_range;
   }
 
@@ -2291,9 +2303,9 @@ void Temperature::isr() {
       case Measure_FSR:
         if (fsr_activation) {
           int16_t new_fsr_value = HAL_READ_ADC();
-          
+
           current_fsr = new_fsr_value;
-          
+
           // Store in circular buffer
           fsr_sample_buffer[fsr_sample_index] = current_fsr;
           fsr_sample_index = (fsr_sample_index + 1) % FSR_SAMPLES;
@@ -2301,30 +2313,37 @@ void Temperature::isr() {
             fsr_sample_count++;
             if (fsr_sample_count < FSR_SAMPLES) {
               fsr_previous = current_fsr;
-              fsr_bias = 0.0;
-              fsr_bias_probe = 0.0;
+              fsr_baseline = current_fsr;
+              fsr_delta = 0.0f;
               fsr_ready = false;
               break;
             }
           }
-          fsr_ready = true;
-          
+
           // Calculate average of samples
           int32_t fsr_sum = 0;
           for (int i = 0; i < FSR_SAMPLES; i++) {
             fsr_sum += fsr_sample_buffer[i];
           }
           int16_t fsr_average = fsr_sum / FSR_SAMPLES;
-          
-          // Calculate bias
-          fsr_bias = fsr_average - fsr_previous;
+          current_fsr = fsr_average;
+
+          if (!fsr_ready) {
+            fsr_baseline = fsr_average;
+            fsr_previous = fsr_average;
+            fsr_delta = 0.0f;
+            fsr_ready = true;
+            break;
+          }
+
+          // Calculate delta for dynamic contact detection
+          fsr_delta = fsr_average - fsr_previous;
           fsr_previous = fsr_average;
-          fsr_bias_probe += fsr_bias;
-          
+
           if (DEBUGGING(INFO)) {
             SERIAL_ECHOPAIR(" FSR Avg: ", fsr_average);
-            SERIAL_ECHOPAIR(" FSR Bias: ", fsr_bias);
-            SERIAL_ECHOPAIR(" FSR Bias Probe: ", fsr_bias_probe);
+            SERIAL_ECHOPAIR(" FSR Delta: ", fsr_delta);
+            SERIAL_ECHOPAIR(" FSR Baseline: ", fsr_baseline);
             SERIAL_EOL();
           }
         }

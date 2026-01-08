@@ -3399,7 +3399,8 @@ void lcd_quick_feedback(const bool clear_buttons) {
     #endif
 	
     #if ENABLED(FSR_SENSOR)
-      MENU_ITEM_EDIT_CALLBACK(float43, MSG_FSR_SENSETIVITY, &thermalManager.fsr_threshold_ratio, -1, -15, lcd_store_settings);
+      MENU_ITEM_EDIT_CALLBACK(float43, MSG_FSR_SLOPE_THRESHOLD, &thermalManager.fsr_slope_threshold, Temperature::FSR_SLOPE_THRESHOLD_MIN, Temperature::FSR_SLOPE_THRESHOLD_MAX, lcd_store_settings);
+      MENU_ITEM_EDIT_CALLBACK(float43, MSG_FSR_MIN_OFFSET, &thermalManager.fsr_min_offset, Temperature::FSR_MIN_OFFSET_MIN, Temperature::FSR_MIN_OFFSET_MAX, lcd_store_settings);
     #endif
 
     #if ENABLED(EEPROM_SETTINGS)
