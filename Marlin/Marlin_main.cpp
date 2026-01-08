@@ -6098,6 +6098,14 @@ void home_all_axes() { gcode_G28(true); }
   inline void gcode_G30() {
     #if ENABLED(FSR_SENSOR)
       const bool do_calibrate = parser.seen('C');
+      const bool do_query = parser.seen('Q');
+      if (do_query && !do_calibrate) {
+        if (fsr_auto_model_valid())
+          SERIAL_ECHOLNPGM("FSR calibrated");
+        else
+          SERIAL_ECHOLNPGM("FSR not calibrated; run G30 C");
+        return;
+      }
       if (do_calibrate) {
         if (axis_unhomed_error()) return;
         if (!position_is_reachable_by_probe(0, 0)) return;
