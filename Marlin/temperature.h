@@ -374,9 +374,9 @@ class Temperature {
     #endif
 
     #if ENABLED(FSR_SENSOR)
-      static constexpr float FSR_SLOPE_THRESHOLD_MIN = 0.0f;
+      static constexpr float FSR_SLOPE_THRESHOLD_MIN = -1000.0f;
       static constexpr float FSR_SLOPE_THRESHOLD_MAX = 1000.0f;
-      static constexpr float FSR_MIN_OFFSET_MIN = 0.0f;
+      static constexpr float FSR_MIN_OFFSET_MIN = -1000.0f;
       static constexpr float FSR_MIN_OFFSET_MAX = 1000.0f;
 
       static int16_t current_fsr;
@@ -397,8 +397,8 @@ class Temperature {
       FORCE_INLINE static void disable_fsr_probe() { fsr_activation = false; fsr_ready = false; }
       FORCE_INLINE static bool fsrTriggered() {
         return fsr_activation && fsr_ready
-          && (fsr_delta > fsr_slope_threshold)
-          && (current_fsr > fsr_baseline + fsr_min_offset);
+          && (fsr_slope_threshold >= 0 ? fsr_delta > fsr_slope_threshold : fsr_delta < fsr_slope_threshold)
+          && (fsr_min_offset >= 0 ? current_fsr > fsr_baseline + fsr_min_offset : current_fsr < fsr_baseline + fsr_min_offset);
       }
       FORCE_INLINE static void resetThreshold() {
         fsr_previous = current_fsr;
