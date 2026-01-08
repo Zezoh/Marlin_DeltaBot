@@ -459,8 +459,11 @@
 #ifndef MSG_BED_Z
   #define MSG_BED_Z                           _UxGT("Bed Z")
 #endif
-#ifndef MSG_FSR_SENSETIVITY
-  #define MSG_FSR_SENSETIVITY                 _UxGT("FSR Sens.")
+#ifndef MSG_FSR_SLOPE_THRESHOLD
+  #define MSG_FSR_SLOPE_THRESHOLD             _UxGT("FSR Slope")
+#endif
+#ifndef MSG_FSR_MIN_OFFSET
+  #define MSG_FSR_MIN_OFFSET                  _UxGT("FSR Offset")
 #endif
 #ifndef MSG_NOZZLE
   #define MSG_NOZZLE                          _UxGT("Nozzle")

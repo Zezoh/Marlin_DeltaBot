@@ -374,28 +374,36 @@ class Temperature {
     #endif
 
     #if ENABLED(FSR_SENSOR)
-      static constexpr float FSR_THRESHOLD_MIN = -10.0f;
-      static constexpr float FSR_THRESHOLD_MAX = -0.05f;
+      static constexpr float FSR_SLOPE_THRESHOLD_MIN = -1000.0f;
+      static constexpr float FSR_SLOPE_THRESHOLD_MAX = 1000.0f;
+      static constexpr float FSR_MIN_OFFSET_MIN = -1000.0f;
+      static constexpr float FSR_MIN_OFFSET_MAX = 1000.0f;
 
       static int16_t current_fsr;
       static float fsr_previous;
-      static float fsr_bias;
-      static float fsr_bias_probe;
-      static float fsr_threshold_ratio;
+      static float fsr_baseline;
+      static float fsr_delta;
+      static float fsr_slope_threshold;
+      static float fsr_min_offset;
       static bool fsr_activation;
       static bool fsr_ready;
       static uint8_t fsr_sample_count;
       static uint8_t fsr_sample_index;
 
-      static bool set_fsr_threshold_ratio(const float ratio);
+      static bool set_fsr_slope_threshold(const float slope);
+      static bool set_fsr_min_offset(const float offset);
       FORCE_INLINE static bool fsrEnabled() { return fsr_activation; }
       FORCE_INLINE static void enable_fsr_probe() { fsr_activation = true; resetThreshold(); }
       FORCE_INLINE static void disable_fsr_probe() { fsr_activation = false; fsr_ready = false; }
-      FORCE_INLINE static bool fsrTriggered() { return fsr_activation && fsr_ready && (fsr_bias_probe < fsr_threshold_ratio); }
+      FORCE_INLINE static bool fsrTriggered() {
+        return fsr_activation && fsr_ready
+          && (fsr_slope_threshold >= 0 ? fsr_delta > fsr_slope_threshold : fsr_delta < fsr_slope_threshold)
+          && (fsr_min_offset >= 0 ? current_fsr > fsr_baseline + fsr_min_offset : current_fsr < fsr_baseline + fsr_min_offset);
+      }
       FORCE_INLINE static void resetThreshold() {
         fsr_previous = current_fsr;
-        fsr_bias = 0.0;
-        fsr_bias_probe = 0.0;
+        fsr_baseline = current_fsr;
+        fsr_delta = 0.0f;
         fsr_ready = false;
         fsr_sample_count = 0;
         fsr_sample_index = 0;

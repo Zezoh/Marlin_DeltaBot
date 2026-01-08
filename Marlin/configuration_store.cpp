@@ -145,7 +145,8 @@ typedef struct SettingsDataStruct {
   //
   
   #if ENABLED(FSR_SENSOR)
-    float thermalManager_fsr_threshold_ratio;           // M853 V thermalManager.fsr_threshold_ratio
+    float thermalManager_fsr_slope_threshold;           // M853 S thermalManager.fsr_slope_threshold
+    float thermalManager_fsr_min_offset;                // M853 O thermalManager.fsr_min_offset
   #endif                               
 
   //
@@ -541,7 +542,8 @@ void MarlinSettings::postprocess() {
     EEPROM_WRITE(zprobe_zoffset);
 	
 	#if ENABLED(FSR_SENSOR)
-      EEPROM_WRITE(thermalManager.fsr_threshold_ratio);
+      EEPROM_WRITE(thermalManager.fsr_slope_threshold);
+      EEPROM_WRITE(thermalManager.fsr_min_offset);
     #endif
 
     //
@@ -1184,8 +1186,10 @@ void MarlinSettings::postprocess() {
       // FSR Sensor for  Bed
       //
       #if ENABLED(FSR_SENSOR)
-        EEPROM_READ(thermalManager.fsr_threshold_ratio);
-        thermalManager.set_fsr_threshold_ratio(thermalManager.fsr_threshold_ratio);
+        EEPROM_READ(thermalManager.fsr_slope_threshold);
+        EEPROM_READ(thermalManager.fsr_min_offset);
+        thermalManager.set_fsr_slope_threshold(thermalManager.fsr_slope_threshold);
+        thermalManager.set_fsr_min_offset(thermalManager.fsr_min_offset);
       #endif
 
       //
@@ -1899,7 +1903,8 @@ void MarlinSettings::reset() {
   #endif
 
   #if ENABLED(FSR_SENSOR)
-    thermalManager.set_fsr_threshold_ratio(FSR_THRESHOLD_RATIO);
+    thermalManager.set_fsr_slope_threshold(FSR_SLOPE_THRESHOLD);
+    thermalManager.set_fsr_min_offset(FSR_MIN_OFFSET);
   #endif
 
   #if ENABLED(DELTA)
@@ -2601,10 +2606,12 @@ void MarlinSettings::reset() {
 	#if ENABLED(FSR_SENSOR)
       if (!forReplay) {
         CONFIG_ECHO_START;
-        SERIAL_ECHOLNPGM("FSR Threshold Ratio:");
+        SERIAL_ECHOLNPGM("FSR Dynamic Contact:");
       }
 	  CONFIG_ECHO_START;
-	  SERIAL_ECHOLNPAIR("  M853 V", thermalManager.fsr_threshold_ratio);
+	  SERIAL_ECHOLNPAIR("  M853 S", thermalManager.fsr_slope_threshold);
+      CONFIG_ECHO_START;
+	  SERIAL_ECHOLNPAIR("  M853 O", thermalManager.fsr_min_offset);
     #endif
 
     /**
