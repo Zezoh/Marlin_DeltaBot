@@ -2593,6 +2593,21 @@ void clean_up_after_endstop_or_probe_move() {
     const float z_probe_low_point = TEST(axis_known_position, Z_AXIS) ? -zprobe_zoffset + Z_PROBE_LOW_POINT : -10.0;
 
     #if ENABLED(FSR_SENSOR)
+      struct FSRProbeStateGuard {
+        const bool endstops_enabled;
+        const bool z_probe_enabled;
+        FSRProbeStateGuard()
+          : endstops_enabled(endstops.enabled),
+            z_probe_enabled(endstops.z_probe_enabled) {
+          endstops.enable(true);
+          endstops.enable_z_probe(true);
+        }
+        ~FSRProbeStateGuard() {
+          endstops.enable(endstops_enabled);
+          endstops.enable_z_probe(z_probe_enabled);
+        }
+      } fsr_probe_state_guard;
+
       auto probe_move = [](const float z, const float fr_mm_s) -> bool {
         if (!fsr_auto_prepare_probe()) return true;
         if (!fsr_auto_arm()) return true;
