@@ -6108,18 +6108,26 @@ void home_all_axes() { gcode_G28(true); }
 
         setup_for_endstop_or_probe_move();
 
+        const bool was_endstops_enabled = endstops.enabled;
         const bool was_z_probe_enabled = endstops.z_probe_enabled;
+        endstops.enable(true);
         endstops.enable_z_probe(true);
 
         do_blocking_move_to_z(Z_CLEARANCE_DEPLOY_PROBE, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
         do_blocking_move_to_xy(0, 0);
         planner.synchronize();
 
-        fsr_calibrate();
+        const bool cal_ok = fsr_calibrate();
 
+        endstops.enable(was_endstops_enabled);
         endstops.enable_z_probe(was_z_probe_enabled);
 
         clean_up_after_endstop_or_probe_move();
+        if (!cal_ok) {
+          LCD_MESSAGEPGM(MSG_ERR_PROBING_FAILED);
+          SERIAL_ERROR_START();
+          SERIAL_ERRORLNPGM(MSG_ERR_PROBING_FAILED);
+        }
         report_current_position();
         return;
       }
