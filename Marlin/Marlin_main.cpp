@@ -11466,11 +11466,11 @@ inline void gcode_M502() {
 #if ENABLED(FSR_SENSOR)
   inline void gcode_M853() {
     if (parser.seen('S')) {
-      thermalManager.fsr_slope_threshold = parser.value_float();
+      thermalManager.set_fsr_slope_threshold(parser.value_float());
     }
 
     if (parser.seen('O')) {
-      thermalManager.fsr_min_offset = parser.value_float();
+      thermalManager.set_fsr_min_offset(parser.value_float());
     }
 
     if (parser.seen('V')) {

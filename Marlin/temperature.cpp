@@ -223,15 +223,41 @@ int16_t Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TE
   static constexpr float FSR_ALPHA = 0.3f; // Smoothing factor for exponential moving average
 
   bool Temperature::set_fsr_threshold_ratio(const float ratio) {
-    fsr_threshold_ratio = ratio;
-    if (fsr_threshold_ratio < FSR_THRESHOLD_MIN) {
+    if (ratio < FSR_THRESHOLD_MIN) {
       fsr_threshold_ratio = FSR_THRESHOLD_MIN;
       return false;
     }
-    if (fsr_threshold_ratio > FSR_THRESHOLD_MAX) {
+    if (ratio > FSR_THRESHOLD_MAX) {
       fsr_threshold_ratio = FSR_THRESHOLD_MAX;
       return false;
     }
+    fsr_threshold_ratio = ratio;
+    return true;
+  }
+
+  bool Temperature::set_fsr_slope_threshold(const float slope) {
+    if (slope < FSR_SLOPE_MIN) {
+      fsr_slope_threshold = FSR_SLOPE_MIN;
+      return false;
+    }
+    if (slope > FSR_SLOPE_MAX) {
+      fsr_slope_threshold = FSR_SLOPE_MAX;
+      return false;
+    }
+    fsr_slope_threshold = slope;
+    return true;
+  }
+
+  bool Temperature::set_fsr_min_offset(const float offset) {
+    if (offset < FSR_OFFSET_MIN) {
+      fsr_min_offset = FSR_OFFSET_MIN;
+      return false;
+    }
+    if (offset > FSR_OFFSET_MAX) {
+      fsr_min_offset = FSR_OFFSET_MAX;
+      return false;
+    }
+    fsr_min_offset = offset;
     return true;
   }
 #endif
@@ -2303,19 +2329,24 @@ void Temperature::isr() {
 
           if (fsr_sample_count < FSR_SAMPLES) {
             fsr_sample_count++;
-            fsr_previous = current_fsr;
             fsr_bias = 0.0f;
             fsr_bias_probe = 0.0f;
-            fsr_ready = false;
+            if (fsr_sample_count < FSR_SAMPLES) {
+              fsr_ready = false;
+              break;
+            }
+
+            fsr_ready = true;
+            int32_t fsr_sum = 0;
+            for (uint8_t i = 0; i < FSR_SAMPLES; i++) fsr_sum += fsr_sample_buffer[i];
+            fsr_previous = (float)fsr_sum / FSR_SAMPLES;
             break;
           }
-
-          fsr_ready = true;
 
           // Calculate average of samples
           int32_t fsr_sum = 0;
           for (uint8_t i = 0; i < FSR_SAMPLES; i++) fsr_sum += fsr_sample_buffer[i];
-          const int16_t fsr_average = fsr_sum / FSR_SAMPLES;
+          const float fsr_average = (float)fsr_sum / FSR_SAMPLES;
 
           // Calculate bias
           fsr_bias = fsr_average - fsr_previous;
