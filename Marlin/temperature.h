@@ -374,21 +374,33 @@ class Temperature {
     #endif
 
     #if ENABLED(FSR_SENSOR)
-      static int16_t current_fsr;
-	    static float fsr_previous;
-	    static float fsr_bias;
-	    static float fsr_bias_probe;
-	    static float fsr_threshold_ratio;
-      static bool fsr_activation;
+      // ISSUE #1 FIX: Proper FSR buffer declaration with constants
+      static constexpr float FSR_THRESHOLD_MIN = -10.0f;
+      static constexpr float FSR_THRESHOLD_MAX = -0.05f;
+      static constexpr uint8_t FSR_SAMPLES = 5;  // Number of samples to average
 
-      FORCE_INLINE static bool fsrTriggered() {
-        bool fsr_triggered = (fsr_bias_probe < fsr_threshold_ratio);
-        return fsr_triggered;
-      }
+      static int16_t current_fsr;
+      static float fsr_previous;
+      static float fsr_bias;
+      static float fsr_bias_probe;
+      static float fsr_threshold_ratio;
+      static bool fsr_activation;
+      static bool fsr_ready;
+      static uint8_t fsr_sample_count;
+      static uint8_t fsr_sample_index;
+      static int16_t fsr_sample_buffer[FSR_SAMPLES];  // ISSUE #1 FIX: Moved to class scope
+
+      static bool set_fsr_threshold_ratio(const float ratio);
+      FORCE_INLINE static bool fsrEnabled() { return fsr_activation; }
+      FORCE_INLINE static void enable_fsr_probe() { fsr_activation = true; resetThreshold(); }
+      FORCE_INLINE static void disable_fsr_probe() { fsr_activation = false; fsr_ready = false; }
+      FORCE_INLINE static bool fsrTriggered() { return fsr_activation && fsr_ready && (fsr_bias_probe < fsr_threshold_ratio); }
       FORCE_INLINE static void resetThreshold() {
-		    fsr_previous = current_fsr;
-        fsr_bias = 0.0;
-        fsr_bias_probe = 0.0;
+        fsr_previous = current_fsr;
+        fsr_bias = 0.0f;
+        fsr_bias_probe = 0.0f;
+        fsr_sample_count = 0;
+        fsr_sample_index = 0;
       }
     #endif
 
@@ -656,7 +668,7 @@ class Temperature {
 
       enum TRState : char { TRInactive, TRFirstHeating, TRStable, TRRunaway };
 
-      static void thermal_runaway_protection(TRState * const state, millis_t * const timer, const float &current, const float &target, const int8_t heater_id, const uint16_t period_seconds, const uint16_t hysteresis_degc);
+      static void thermal_runaway_protection(TRState * const state, millis_t * const timer, const float &current, const float &target, const int8_t heater_id, const uint16_t period_seconds, const uint8_t hysteresis_degc);
 
       #if ENABLED(THERMAL_PROTECTION_HOTENDS)
         static TRState thermal_runaway_state_machine[HOTENDS];
