@@ -2657,7 +2657,7 @@ void clean_up_after_endstop_or_probe_move() {
 
 	// Simulate probe deploy
 	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = true;
+	  thermalManager.enable_fsr_probe();
     #endif
 
       // Do a first probe at the fast speed
@@ -2667,6 +2667,9 @@ void clean_up_after_endstop_or_probe_move() {
             SERIAL_ECHOLNPGM("FAST Probe fail!");
             DEBUG_POS("<<< run_z_probe", current_position);
           }
+        #endif
+        #if ENABLED(FSR_SENSOR)
+          thermalManager.disable_fsr_probe();
         #endif
         return NAN;
       }
@@ -2702,7 +2705,7 @@ void clean_up_after_endstop_or_probe_move() {
 
 	// simulate probe deploy
 	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = true;
+	  thermalManager.enable_fsr_probe();
     #endif
 
 		bool all_points_are_good = false;
@@ -2716,12 +2719,9 @@ void clean_up_after_endstop_or_probe_move() {
 		do {
 		   
 		  if (adjust_fsr_threshold > 5) {
-		    if (thermalManager.fsr_threshold_ratio > -4.0) {
-			  thermalManager.fsr_threshold_ratio -= 0.15;
-		    } else {
-			  //thermalManager.fsr_threshold_ratio -= 0.10;
-              thermalManager.resetThreshold();
-		    }
+            const float requested_ratio = thermalManager.fsr_threshold_ratio - 0.15f;
+            const bool in_range = thermalManager.set_fsr_threshold_ratio(requested_ratio);
+            if (!in_range) thermalManager.resetThreshold();
 		    SERIAL_ECHOPGM("New fsr threshold: ");
 		    SERIAL_ECHOLN(thermalManager.fsr_threshold_ratio);
 		    adjust_fsr_threshold = 0;
@@ -2735,6 +2735,9 @@ void clean_up_after_endstop_or_probe_move() {
 			  DEBUG_POS("<<< run_z_probe", current_position);
 			}
 			#endif
+            #if ENABLED(FSR_SENSOR)
+              thermalManager.disable_fsr_probe();
+            #endif
 			return NAN;
 		  }
 
@@ -2749,7 +2752,7 @@ void clean_up_after_endstop_or_probe_move() {
           // SERIAL_ECHOLN(adjust_fsr_threshold);
 		  z_avg = (z_read[0] + z_read[1] + z_read[2]) / 3.0;
 		  
-		  if (destination[Z_AXIS] > 66.90) {
+		  if (destination[Z_AXIS] > FSR_CALIBRATION_MAX_Z) {
 			int i = 10;
 			do {
 			  idle();
@@ -2773,7 +2776,7 @@ void clean_up_after_endstop_or_probe_move() {
 	
 		// Simulate probe deploy
 	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = true;
+	  thermalManager.enable_fsr_probe();
     #endif
 	
       float probes_total = 0;
@@ -2787,6 +2790,9 @@ void clean_up_after_endstop_or_probe_move() {
               SERIAL_ECHOLNPGM("SLOW Probe fail!");
               DEBUG_POS("<<< run_z_probe", current_position);
             }
+          #endif
+          #if ENABLED(FSR_SENSOR)
+            thermalManager.disable_fsr_probe();
           #endif
           return NAN;
         }
@@ -2834,7 +2840,7 @@ void clean_up_after_endstop_or_probe_move() {
     
 	// simulate probe stow
 	#if ENABLED(FSR_SENSOR)
-	  thermalManager.fsr_activation = false;
+	  thermalManager.disable_fsr_probe();
     #endif
 
     return measured_z;
@@ -11459,9 +11465,22 @@ inline void gcode_M502() {
 
 #if ENABLED(FSR_SENSOR)
   inline void gcode_M853() {
-	if (parser.seen('V')) thermalManager.fsr_threshold_ratio = parser.value_float();
-	  SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
-	  SERIAL_EOL();
+    if (parser.seen('S')) {
+      thermalManager.fsr_slope_threshold = parser.value_float();
+    }
+
+    if (parser.seen('O')) {
+      thermalManager.fsr_min_offset = parser.value_float();
+    }
+
+    if (parser.seen('V')) {
+      thermalManager.set_fsr_threshold_ratio(parser.value_float());
+    }
+
+    SERIAL_ECHOPAIR("FSR Threshold Ratio = ", thermalManager.fsr_threshold_ratio);
+    SERIAL_ECHOPAIR(" Slope = ", thermalManager.fsr_slope_threshold);
+    SERIAL_ECHOPAIR(" Offset = ", thermalManager.fsr_min_offset);
+    SERIAL_EOL();
   }
 #endif
 

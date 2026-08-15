@@ -207,18 +207,33 @@ int16_t Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TE
 #endif
 
 #if ENABLED(FSR_SENSOR)
-  bool Temperature::fsr_activation;
+  bool Temperature::fsr_activation = false;
   int16_t Temperature::current_fsr = 0;
-  float Temperature::fsr_previous = 0; 
-  float Temperature::fsr_bias = 0; 
+  float Temperature::fsr_previous = 0;
+  float Temperature::fsr_bias = 0;
   float Temperature::fsr_bias_probe = 0;
   float Temperature::fsr_threshold_ratio = FSR_THRESHOLD_RATIO;
-  
-  // New variables for improved FSR functionality
-  const float FSR_ALPHA = 0.3; // Smoothing factor for exponential moving average
-  const int FSR_SAMPLES = 5; // Number of samples to average
-  int16_t fsr_sample_buffer[FSR_SAMPLES] = {0};
-  int fsr_sample_index = 0;
+  float Temperature::fsr_slope_threshold = 1.0f;
+  float Temperature::fsr_min_offset = 0.0f;
+  bool Temperature::fsr_ready = false;
+  uint8_t Temperature::fsr_sample_count = 0;
+  uint8_t Temperature::fsr_sample_index = 0;
+  int16_t Temperature::fsr_sample_buffer[FSR_SAMPLES] = { 0 };
+
+  static constexpr float FSR_ALPHA = 0.3f; // Smoothing factor for exponential moving average
+
+  bool Temperature::set_fsr_threshold_ratio(const float ratio) {
+    fsr_threshold_ratio = ratio;
+    if (fsr_threshold_ratio < FSR_THRESHOLD_MIN) {
+      fsr_threshold_ratio = FSR_THRESHOLD_MIN;
+      return false;
+    }
+    if (fsr_threshold_ratio > FSR_THRESHOLD_MAX) {
+      fsr_threshold_ratio = FSR_THRESHOLD_MAX;
+      return false;
+    }
+    return true;
+  }
 #endif
 
 #if HAS_AUTO_FAN || ENABLED(IS_MONO_FAN)
@@ -2277,27 +2292,36 @@ void Temperature::isr() {
         break;
       case Measure_FSR:
         if (fsr_activation) {
-          int16_t new_fsr_value = HAL_READ_ADC();
-          
+          const int16_t new_fsr_value = HAL_READ_ADC();
+
           // Apply exponential moving average filter
           current_fsr = (FSR_ALPHA * new_fsr_value) + ((1 - FSR_ALPHA) * current_fsr);
-          
+
           // Store in circular buffer
           fsr_sample_buffer[fsr_sample_index] = current_fsr;
           fsr_sample_index = (fsr_sample_index + 1) % FSR_SAMPLES;
-          
+
+          if (fsr_sample_count < FSR_SAMPLES) {
+            fsr_sample_count++;
+            fsr_previous = current_fsr;
+            fsr_bias = 0.0f;
+            fsr_bias_probe = 0.0f;
+            fsr_ready = false;
+            break;
+          }
+
+          fsr_ready = true;
+
           // Calculate average of samples
           int32_t fsr_sum = 0;
-          for (int i = 0; i < FSR_SAMPLES; i++) {
-            fsr_sum += fsr_sample_buffer[i];
-          }
-          int16_t fsr_average = fsr_sum / FSR_SAMPLES;
-          
+          for (uint8_t i = 0; i < FSR_SAMPLES; i++) fsr_sum += fsr_sample_buffer[i];
+          const int16_t fsr_average = fsr_sum / FSR_SAMPLES;
+
           // Calculate bias
           fsr_bias = fsr_average - fsr_previous;
           fsr_previous = fsr_average;
           fsr_bias_probe += fsr_bias;
-          
+
           if (DEBUGGING(INFO)) {
             SERIAL_ECHOPAIR(" FSR Avg: ", fsr_average);
             SERIAL_ECHOPAIR(" FSR Bias: ", fsr_bias);
