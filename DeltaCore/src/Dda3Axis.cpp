@@ -3,71 +3,55 @@
 namespace deltacore {
 
 Dda3Axis::Dda3Axis()
-  : total_events_(0),
-    remaining_(0),
-    dividend_{0, 0, 0},
-    divisor_(0),
-    error_{0, 0, 0} {}
+  : error_{0, 0, 0}, dividend_{0, 0, 0}, divisor_(0), total_events_(0), completed_events_(0) {}
 
-bool Dda3Axis::begin(const uint32_t stepsA, const uint32_t stepsB, const uint32_t stepsC) {
-  total_events_ = stepsA;
-  if (stepsB > total_events_) total_events_ = stepsB;
-  if (stepsC > total_events_) total_events_ = stepsC;
+bool Dda3Axis::begin(const uint32_t steps[AXIS_COUNT]) {
+  uint32_t max_steps = steps[A_AXIS];
+  if (steps[B_AXIS] > max_steps) max_steps = steps[B_AXIS];
+  if (steps[C_AXIS] > max_steps) max_steps = steps[C_AXIS];
 
-  remaining_ = total_events_;
-
+  total_events_ = max_steps;
+  completed_events_ = 0;
   if (!total_events_) {
-    dividend_[0] = dividend_[1] = dividend_[2] = 0;
     divisor_ = 0;
     error_[0] = error_[1] = error_[2] = 0;
+    dividend_[0] = dividend_[1] = dividend_[2] = 0;
     return false;
   }
 
-  // Same DDA invariant used by this Marlin 1.1.9.2 tree.
-  // Use 64-bit temporaries only during setup so we can reject overflow cleanly.
-  const uint64_t divA = uint64_t(stepsA) << 1;
-  const uint64_t divB = uint64_t(stepsB) << 1;
-  const uint64_t divC = uint64_t(stepsC) << 1;
-  const uint64_t divisor = uint64_t(total_events_) << 1;
-
-  if (divA > UINT32_MAX || divB > UINT32_MAX || divC > UINT32_MAX || divisor > UINT32_MAX) {
-    total_events_ = remaining_ = 0;
+  // Doubling count/dividends must remain inside signed 32-bit arithmetic.
+  if (total_events_ > 0x3FFFFFFFUL) {
+    total_events_ = 0;
     return false;
   }
 
-  dividend_[0] = uint32_t(divA);
-  dividend_[1] = uint32_t(divB);
-  dividend_[2] = uint32_t(divC);
-  divisor_ = uint32_t(divisor);
-
-  // error must remain representable as signed 32-bit for the AVR implementation.
-  if (total_events_ > uint32_t(INT32_MAX)) {
-    total_events_ = remaining_ = 0;
-    return false;
+  divisor_ = total_events_ << 1;
+  for (uint8_t axis = 0; axis < AXIS_COUNT; ++axis) {
+    error_[axis] = -int32_t(total_events_);
+    dividend_[axis] = steps[axis] << 1;
   }
-
-  error_[0] = error_[1] = error_[2] = -int32_t(total_events_);
   return true;
 }
 
 StepMask Dda3Axis::next() {
-  StepMask out{0};
-  if (!remaining_) return out;
+  StepMask result = { 0 };
+  if (!active()) return result;
 
-  for (uint8_t axis = 0; axis < 3; ++axis) {
-    // Match Marlin's two-phase logic conceptually: add dividend, pulse when >= 0,
-    // then subtract the common divisor for axes which stepped.
-    const int64_t next_error = int64_t(error_[axis]) + int64_t(dividend_[axis]);
-    error_[axis] = int32_t(next_error);
-
+  for (uint8_t axis = 0; axis < AXIS_COUNT; ++axis) {
+    error_[axis] += int32_t(dividend_[axis]);
     if (error_[axis] >= 0) {
-      out.bits |= uint8_t(1u << axis);
+      result.bits |= uint8_t(1U << axis);
       error_[axis] -= int32_t(divisor_);
     }
   }
 
-  --remaining_;
-  return out;
+  ++completed_events_;
+  return result;
 }
+
+bool Dda3Axis::active() const { return completed_events_ < total_events_; }
+uint32_t Dda3Axis::totalEvents() const { return total_events_; }
+uint32_t Dda3Axis::completedEvents() const { return completed_events_; }
+uint32_t Dda3Axis::remainingEvents() const { return total_events_ - completed_events_; }
 
 } // namespace deltacore

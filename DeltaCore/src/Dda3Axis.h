@@ -1,40 +1,31 @@
 #pragma once
-
 #include <stdint.h>
 
 namespace deltacore {
 
+enum Axis : uint8_t { A_AXIS = 0, B_AXIS = 1, C_AXIS = 2, AXIS_COUNT = 3 };
+
 struct StepMask {
   uint8_t bits;
-
-  enum : uint8_t {
-    A = 1u << 0,
-    B = 1u << 1,
-    C = 1u << 2
-  };
-
-  bool stepA() const { return bits & A; }
-  bool stepB() const { return bits & B; }
-  bool stepC() const { return bits & C; }
+  bool test(const Axis axis) const { return bits & (uint8_t(1U) << axis); }
 };
 
 class Dda3Axis {
 public:
   Dda3Axis();
-
-  bool begin(uint32_t stepsA, uint32_t stepsB, uint32_t stepsC);
+  bool begin(const uint32_t steps[AXIS_COUNT]);
   StepMask next();
-
-  bool active() const { return remaining_ != 0; }
-  uint32_t totalEvents() const { return total_events_; }
-  uint32_t remainingEvents() const { return remaining_; }
+  bool active() const;
+  uint32_t totalEvents() const;
+  uint32_t completedEvents() const;
+  uint32_t remainingEvents() const;
 
 private:
-  uint32_t total_events_;
-  uint32_t remaining_;
-  uint32_t dividend_[3];
+  int32_t error_[AXIS_COUNT];
+  uint32_t dividend_[AXIS_COUNT];
   uint32_t divisor_;
-  int32_t error_[3];
+  uint32_t total_events_;
+  uint32_t completed_events_;
 };
 
 } // namespace deltacore

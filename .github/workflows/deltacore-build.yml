@@ -1,0 +1,48 @@
+name: DeltaCore AVR Build
+
+on:
+  push:
+    branches:
+      - codex/deltacore-motion-baseline-v0.1
+    paths:
+      - 'DeltaCore/**'
+      - '.github/workflows/deltacore-build.yml'
+  pull_request:
+    paths:
+      - 'DeltaCore/**'
+      - '.github/workflows/deltacore-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Host math tests
+        run: |
+          g++ -std=c++11 -Wall -Wextra -pedantic -IDeltaCore/src \
+            DeltaCore/test/test_math.cpp \
+            DeltaCore/src/Dda3Axis.cpp \
+            DeltaCore/src/Kinematics.cpp \
+            -o /tmp/deltacore_math_test
+          /tmp/deltacore_math_test
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+
+      - name: Build Mega2560 firmware
+        run: pio run --project-dir DeltaCore -e megaatmega2560
+
+      - name: Upload firmware HEX
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeltaCore-Mega2560
+          path: DeltaCore/.pio/build/megaatmega2560/firmware.hex
+          if-no-files-found: error
