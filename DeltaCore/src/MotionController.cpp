@@ -10,9 +10,9 @@ namespace deltacore {
 MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper, Kinematics &kinematics, PathPlanner &planner)
   : queue_(queue), stepper_(stepper), kinematics_(kinematics), planner_(planner),
     homed_(false), home_state_(HOME_IDLE), event_(EVENT_NONE), last_request_error_(REQUEST_OK),
-    current_xyz_{0,0,0}, home_motor_steps_{0,0,0}, batch_active_(false), generation_complete_(false),
-    flush_requested_(false), phase_anchor_pending_(false), last_enqueue_ms_(0), generating_index_(0),
-    generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_motor_steps_{0,0,0},
+    current_xyz_{0,0,0}, home_motor_steps_{0,0,0}, batch_active_(false), motion_started_(false),
+    generation_complete_(false), flush_requested_(false), phase_anchor_pending_(false), last_enqueue_ms_(0),
+    generating_index_(0), generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_motor_steps_{0,0,0},
     final_motor_steps_{0,0,0}, profile_(), acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2),
     default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S), smoothing_mode_(-1) {}
 
@@ -20,6 +20,7 @@ void MotionController::begin() {
   homed_ = false;
   home_state_ = HOME_IDLE;
   batch_active_ = false;
+  motion_started_ = false;
   generation_complete_ = false;
   flush_requested_ = false;
   phase_anchor_pending_ = false;
@@ -105,6 +106,14 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
 
   float start[3];
   commandPosition(start);
+  float delta2 = 0.0f;
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    const float d = target_xyz[axis] - start[axis];
+    delta2 += d * d;
+  }
+  // A zero-length G1 is a valid host no-op, not a motion error.
+  if (delta2 < 0.00000025f) return last_request_error_ = REQUEST_OK;
+
   if (!validatePath(start, target_xyz)) return last_request_error_ = REQUEST_KINEMATICS;
 
   if (feed_mm_s < 1.0f) feed_mm_s = 1.0f;
@@ -235,9 +244,12 @@ bool MotionController::generateOneSegment() {
   float tower_start[3], tower_end[3];
   int32_t target_steps[3];
   if (!kinematics_.cartesianToTower(startpoint, tower_start)
-      || !kinematics_.cartesianToTower(endpoint, tower_end)
-      || !kinematics_.cartesianToSteps(endpoint, target_steps)
-      || !towerWithinHome(target_steps)) {
+      || !kinematics_.cartesianToTower(endpoint, tower_end)) {
+    stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
+  }
+  for (uint8_t axis = 0; axis < 3; ++axis)
+    target_steps[axis] = int32_t(lroundf(tower_end[axis] * cfg::STEPS_PER_MM));
+  if (!towerWithinHome(target_steps)) {
     stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
   }
 
@@ -307,7 +319,6 @@ bool MotionController::generateOneSegment() {
 
   if (!queue_.enqueue(block)) return false;
   phase_anchor_pending_ = false;
-  stepper_.kickMotion();
 
   generated_time_s_ = next_time;
   generated_distance_mm_ = js1.distance_mm;
@@ -332,6 +343,7 @@ bool MotionController::startBatch() {
   if (!planner_.plan()) return false;
   queue_.clear();
   generating_index_ = 0;
+  motion_started_ = false;
   generation_complete_ = false;
   phase_anchor_pending_ = true;
   if (!initGeneratingMove(0)) return false;
@@ -358,6 +370,7 @@ void MotionController::finishHome() {
 
 void MotionController::failController() {
   batch_active_ = false;
+  motion_started_ = false;
   generation_complete_ = false;
   flush_requested_ = false;
   phase_anchor_pending_ = false;
@@ -404,8 +417,20 @@ void MotionController::service() {
 
   if (!batch_active_) return;
 
-  while (!generation_complete_ && queue_.freeSlots() > 1U) {
-    if (!generateOneSegment()) break;
+  if (!motion_started_) {
+    while (!generation_complete_ && queue_.count() < cfg::MOTION_START_PREFILL_BLOCKS) {
+      if (!generateOneSegment()) break;
+    }
+    if (!queue_.empty()
+        && (generation_complete_ || queue_.count() >= cfg::MOTION_START_PREFILL_BLOCKS)) {
+      stepper_.kickMotion();
+      motion_started_ = true;
+    }
+  }
+  else {
+    while (!generation_complete_ && queue_.freeSlots() > 1U) {
+      if (!generateOneSegment()) break;
+    }
   }
 
   if (generation_complete_ && queue_.empty() && !stepper_.motionBusy()) {
@@ -415,6 +440,7 @@ void MotionController::service() {
     }
     planner_.clear();
     batch_active_ = false;
+    motion_started_ = false;
     generation_complete_ = false;
     phase_anchor_pending_ = false;
     event_ = EVENT_MOVE_DONE;
@@ -424,14 +450,14 @@ void MotionController::service() {
 void MotionController::emergencyStop() {
   stepper_.emergencyStop(FAULT_ESTOP);
   queue_.clear(); planner_.clear(); homed_ = false; home_state_ = HOME_IDLE;
-  batch_active_ = false; generation_complete_ = false; flush_requested_ = false;
+  batch_active_ = false; motion_started_ = false; generation_complete_ = false; flush_requested_ = false;
   phase_anchor_pending_ = false; event_ = EVENT_FAULT;
 }
 
 bool MotionController::clearFault() {
   if (batch_active_ || home_state_ != HOME_IDLE || !planner_.empty() || stepper_.motionBusy()) return false;
   if (!stepper_.clearFault()) return false;
-  event_ = EVENT_NONE; homed_ = false; phase_anchor_pending_ = false; return true;
+  event_ = EVENT_NONE; homed_ = false; motion_started_ = false; phase_anchor_pending_ = false; return true;
 }
 
 } // namespace deltacore
