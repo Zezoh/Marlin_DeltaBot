@@ -1,4 +1,4 @@
-# DeltaCore v0.5.4 final clean-tip verification
+# DeltaCore v0.5.5 final clean-tip verification
 name: DeltaCore AVR Build
 
 on:
@@ -42,6 +42,9 @@ jobs:
       - name: Realtime UART and adaptive-refill stress simulation
         run: python3 DeltaCore/test/sim_realtime_v054.py
 
+      - name: Tiny-tail and underrun recovery regression
+        run: python3 DeltaCore/test/sim_v055.py
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -64,7 +67,7 @@ jobs:
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560-v0.5.4
+          name: DeltaCore-Mega2560-v0.5.5
           path: |
             DeltaCore/.pio/build/megaatmega2560/firmware.hex
             DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
