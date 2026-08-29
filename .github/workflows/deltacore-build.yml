@@ -1,4 +1,4 @@
-# DeltaCore v0.5.5 + cycle-accurate RAMPS 1.4 HIL verification
+# DeltaCore v0.5.5 + cycle-accurate RAMPS 1.4 HIL verification (controller-owned Timer1 start)
 name: DeltaCore AVR Build
 
 on:
