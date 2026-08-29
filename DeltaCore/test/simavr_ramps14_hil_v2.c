@@ -108,7 +108,7 @@ int main(int argc, char **argv) {
     }
 
     size_t mark = s.out_len;
-    enqueue_line(&s, "M111 S1");
+    enqueue_line(&s, "M111 S2");
     enqueue_line(&s, "G28");
     if (!wait_token_from(&s, mark, "echo:HOME_DONE", 5000)) {
         fail(&s, "homing timeout");
@@ -129,7 +129,7 @@ int main(int argc, char **argv) {
     /* First line only changes modal feed at the already-current XYZ, so the
        firmware correctly counts 52 physical moves, not 53 G1 records. */
     if (!run_path_v2(&s, "short-segment-torture",
-                     SHORT, 52, 0, 0, 120, 30000)) goto done;
+                     SHORT, 52, 0, 0, 120, 15000)) goto done;
 
     {
         const char *rev =
