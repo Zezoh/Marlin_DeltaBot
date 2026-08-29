@@ -1,0 +1,23 @@
+name: Tune DeltaCore v0.5.4 realtime test
+on:
+  push:
+    branches:
+      - codex/deltacore-motion-baseline-v0.1
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[v0.5.4-test-tuned]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/deltacore-motion-baseline-v0.1
+          fetch-depth: 0
+      - run: python3 tools/tune_v054_realtime_test.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add DeltaCore/test/sim_realtime_v054.py
+          git commit -m "test: tune v0.5.4 realtime matrix [v0.5.4-test-tuned]"
+          git push origin HEAD:codex/deltacore-motion-baseline-v0.1
