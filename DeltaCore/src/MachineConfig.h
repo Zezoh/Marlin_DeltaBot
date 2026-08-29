@@ -62,7 +62,7 @@ constexpr float HOME_MAX_TRAVEL_MM = 300.0f;
 
 constexpr uint32_t TIMER_HZ = 2000000UL;
 constexpr uint16_t STEP_PULSE_TICKS = 6;
-constexpr uint16_t MIN_EVENT_INTERVAL_TICKS = 80;
+constexpr uint16_t MIN_EVENT_INTERVAL_TICKS = 120;
 constexpr uint16_t MAX_EVENT_INTERVAL_TICKS = 65000;
 constexpr uint16_t STARTUP_EVENT_TICKS = 200;
 

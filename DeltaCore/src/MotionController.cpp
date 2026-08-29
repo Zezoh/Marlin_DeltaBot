@@ -189,197 +189,66 @@ uint8_t MotionController::smoothingLevelForTicks(const uint32_t base_ticks) cons
   return level;
 }
 
-static uint16_t clampTimerTicks(const uint32_t ticks) {
-  if (ticks < cfg::MIN_EVENT_INTERVAL_TICKS) return cfg::MIN_EVENT_INTERVAL_TICKS;
-  if (ticks > cfg::MAX_EVENT_INTERVAL_TICKS) return cfg::MAX_EVENT_INTERVAL_TICKS;
-  return uint16_t(ticks);
-}
-
-static int32_t towerPhaseQ15(const float tower_mm) {
-  return int32_t(lroundf(tower_mm * cfg::STEPS_PER_MM * float(PHASE_ONE)));
-}
-
-static int32_t roundedPhaseSteps(const int32_t q15) {
-  if (q15 >= 0) return (q15 + PHASE_HALF) >> PHASE_FRAC_BITS;
-  return -(((-q15) + PHASE_HALF) >> PHASE_FRAC_BITS);
-}
-
 bool MotionController::generateOneSegment() {
   if (generating_index_ >= planner_.count()) { generation_complete_ = true; return true; }
   if (queue_.full()) return false;
-
   const PathMove &m = planner_.move(generating_index_);
   if (!profile_.valid()) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
-
   const float remaining_time = profile_.totalTime() - generated_time_s_;
   if (remaining_time <= 1.0e-7f) {
     ++generating_index_;
     if (generating_index_ >= planner_.count()) { generation_complete_ = true; return true; }
     return initGeneratingMove(generating_index_);
   }
-
   const float dt = adaptiveSegmentDuration(m, generated_time_s_);
   if (dt <= 0.0f) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
   float next_time = generated_time_s_ + dt;
   if (next_time > profile_.totalTime()) next_time = profile_.totalTime();
   const float actual_dt = next_time - generated_time_s_;
-
-  const JerkSample js0 = profile_.sample(generated_time_s_);
   const JerkSample js1 = profile_.sample(next_time);
-  const float actual_ds = js1.distance_mm - js0.distance_mm;
-  if (actual_ds <= 0.0f) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
-
   const float endpoint[3] = {
     m.start[0] + m.unit[0] * js1.distance_mm,
     m.start[1] + m.unit[1] * js1.distance_mm,
     m.start[2] + m.unit[2] * js1.distance_mm
   };
-
-  float tower_end[3];
-  int32_t target_steps[3];
-  if (!kinematics_.cartesianToTower(endpoint, tower_end)) {
-    stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
-  }
-  for (uint8_t axis = 0; axis < 3; ++axis)
-    target_steps[axis] = int32_t(lroundf(tower_end[axis] * cfg::STEPS_PER_MM));
-  if (!towerWithinHome(target_steps)) {
-    stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
-  }
+  float tower_end[3]; int32_t target_steps[3];
+  if (!kinematics_.cartesianToTower(endpoint, tower_end)) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+  for (uint8_t a=0;a<3;++a) target_steps[a]=int32_t(lroundf(tower_end[a]*cfg::STEPS_PER_MM));
+  if (!towerWithinHome(target_steps)) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
 
   MotorBlock block = {};
-  int32_t phase_start_q15[3];
-  float continuous_master_steps = 0.0f;
-  for (uint8_t axis = 0; axis < 3; ++axis) {
-    phase_start_q15[axis] = towerPhaseQ15(generated_tower_mm_[axis]);
-    block.phase_end_q15[axis] = towerPhaseQ15(tower_end[axis]);
-    const int32_t phase_delta = block.phase_end_q15[axis] - phase_start_q15[axis];
-    const float continuous_steps = fabsf(float(phase_delta) / float(PHASE_ONE));
-    if (continuous_steps > continuous_master_steps) continuous_master_steps = continuous_steps;
-    if (phase_delta >= 0) block.direction_bits |= uint8_t(1U << axis);
-    if (roundedPhaseSteps(block.phase_end_q15[axis]) != target_steps[axis]) {
-      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
-    }
+  uint16_t max_steps = 0;
+  for (uint8_t a=0;a<3;++a) {
+    const int32_t d = target_steps[a] - generated_motor_steps_[a];
+    const uint32_t mag = d >= 0 ? uint32_t(d) : uint32_t(-d);
+    if (mag > 65535UL) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+    block.steps[a] = uint16_t(mag);
+    if (block.steps[a] > max_steps) max_steps = block.steps[a];
+    if (d >= 0) block.direction_bits |= uint8_t(1U << a);
   }
-
-  float requested_base_events = continuous_master_steps;
-  const float time_events = actual_dt * cfg::PHASE_MIN_EVENT_HZ;
-  if (requested_base_events < time_events) requested_base_events = time_events;
-  uint32_t base_events = uint32_t(ceilf(requested_base_events));
-  if (!base_events) base_events = 1U;
-
-  const float total_ticks_f = actual_dt * float(cfg::TIMER_HZ);
-  if (total_ticks_f < float(cfg::MIN_EVENT_INTERVAL_TICKS)) {
+  block.event_count = max_steps ? max_steps : 1U;
+  const uint32_t total_ticks = uint32_t(actual_dt * float(cfg::TIMER_HZ) + 0.5f);
+  if (total_ticks < block.event_count) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+  const uint32_t base = total_ticks / block.event_count;
+  if (base < cfg::MIN_EVENT_INTERVAL_TICKS || base > cfg::MAX_EVENT_INTERVAL_TICKS) {
     stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
   }
-
-  uint32_t avg_base_ticks = uint32_t(total_ticks_f / float(base_events) + 0.5f);
-  if (avg_base_ticks < cfg::MIN_EVENT_INTERVAL_TICKS) avg_base_ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
-  uint8_t level = smoothingLevelForTicks(avg_base_ticks);
-  while (level && (total_ticks_f / float(base_events << level)) < float(cfg::MIN_EVENT_INTERVAL_TICKS)) --level;
-  block.virtual_events = base_events << level;
-  if (!block.virtual_events) block.virtual_events = 1U;
-
-  for (uint8_t axis = 0; axis < 3; ++axis) {
-    const int32_t delta = block.phase_end_q15[axis] - phase_start_q15[axis];
-    block.phase_inc_q15[axis] = delta / int32_t(block.virtual_events);
-  }
-
-  // Velocity-continuous event clock. Previous versions independently
-  // re-derived interval_start for every Delta segment. Because virtual_events
-  // changes with tower geometry and ceil(), adjacent blocks could have a
-  // discontinuous step-event rate even while actuator phase stayed exact.
-  // Carry the actual tail interval into the next block, then solve the linear
-  // interval ramp so the arithmetic-series sum still equals this block's dt.
-  uint16_t independent_start_ticks = 0;
-  if (block.virtual_events == 1U) {
-    independent_start_ticks = clampTimerTicks(uint32_t(total_ticks_f + 0.5f));
-  }
-  else {
-    const float event_density = float(block.virtual_events) / actual_ds;
-    float rate_start = event_density * js0.speed_mm_s;
-    float rate_end = event_density * js1.speed_mm_s;
-    if (rate_start < 1.0f) rate_start = 1.0f;
-    if (rate_end < 1.0f) rate_end = 1.0f;
-    float raw_start = float(cfg::TIMER_HZ) / rate_start;
-    float raw_end = float(cfg::TIMER_HZ) / rate_end;
-    const float raw_total = float(block.virtual_events) * 0.5f * (raw_start + raw_end);
-    const float scale = raw_total > 0.0f ? total_ticks_f / raw_total : 1.0f;
-    raw_start *= scale;
-    independent_start_ticks = clampTimerTicks(uint32_t(raw_start + 0.5f));
-  }
-
-  if (block.virtual_events == 1U) {
-    block.interval_start_ticks = independent_start_ticks;
-    block.interval_delta_q8 = 0;
-    generated_interval_tail_q8_ = int32_t(block.interval_start_ticks) << 8;
-    interval_continuity_valid_ = true;
-  }
-  else {
-    const int64_t total_q8 = int64_t(total_ticks_f * 256.0f + 0.5f);
-    const int32_t min_q8 = int32_t(cfg::MIN_EVENT_INTERVAL_TICKS) << 8;
-    const int32_t max_q8 = int32_t(cfg::MAX_EVENT_INTERVAL_TICKS) << 8;
-
-    int32_t start_q8 = interval_continuity_valid_
-      ? generated_interval_tail_q8_
-      : (int32_t(independent_start_ticks) << 8);
-    if (start_q8 < min_q8) start_q8 = min_q8;
-    if (start_q8 > max_q8) start_q8 = max_q8;
-
-    // Exact-time feasibility for a linear interval ramp: E = 2*avg - S.
-    // Clamp S only if the carried value would force E outside timer limits.
-    const int64_t twice_avg_q8 = (2LL * total_q8) / int64_t(block.virtual_events);
-    int64_t feasible_lo = twice_avg_q8 - int64_t(max_q8);
-    int64_t feasible_hi = twice_avg_q8 - int64_t(min_q8);
-    if (feasible_lo < min_q8) feasible_lo = min_q8;
-    if (feasible_hi > max_q8) feasible_hi = max_q8;
-    if (feasible_lo <= feasible_hi) {
-      if (start_q8 < feasible_lo) start_q8 = int32_t(feasible_lo);
-      if (start_q8 > feasible_hi) start_q8 = int32_t(feasible_hi);
-    }
-
-    block.interval_start_ticks = clampTimerTicks(uint32_t((start_q8 + 128) >> 8));
-    const int64_t stored_start_q8 = int64_t(block.interval_start_ticks) << 8;
-    const int64_t n = int64_t(block.virtual_events);
-    const int64_t denom = n * (n - 1LL);
-    const int64_t numer = 2LL * (total_q8 - n * stored_start_q8);
-    int64_t delta_q8 = denom ? (numer / denom) : 0;
-    if (delta_q8 > 2147483647LL) delta_q8 = 2147483647LL;
-    if (delta_q8 < -2147483647LL) delta_q8 = -2147483647LL;
-    block.interval_delta_q8 = int32_t(delta_q8);
-
-    int64_t tail_q8 = stored_start_q8 + delta_q8 * (n - 1LL);
-    if (tail_q8 < min_q8) tail_q8 = min_q8;
-    if (tail_q8 > max_q8) tail_q8 = max_q8;
-    generated_interval_tail_q8_ = int32_t(tail_q8);
-    interval_continuity_valid_ = true;
-  }
-
-  if (phase_anchor_pending_) {
-    if (!stepper_.setPhaseAnchorQ15(phase_start_q15)) {
-      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
-    }
-    block.flags |= BLOCK_FLAG_PHASE_ANCHOR;
-  }
+  block.interval_base_ticks = uint16_t(base);
+  block.interval_remainder_ticks = uint16_t(total_ticks % block.event_count);
   if (!queue_.enqueue(block)) return false;
-  phase_anchor_pending_ = false;
 
   generated_time_s_ = next_time;
   generated_distance_mm_ = js1.distance_mm;
-  for (uint8_t axis = 0; axis < 3; ++axis) {
-    generated_motor_steps_[axis] = target_steps[axis];
-    generated_tower_mm_[axis] = tower_end[axis];
+  for (uint8_t a=0;a<3;++a) {
+    generated_motor_steps_[a] = target_steps[a];
+    generated_tower_mm_[a] = tower_end[a];
   }
-
   if (generated_time_s_ >= profile_.totalTime() - 1.0e-7f) {
-    for (uint8_t axis = 0; axis < 3; ++axis)
-      if (generated_motor_steps_[axis] != final_motor_steps_[axis]) {
-        stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
-      }
+    for (uint8_t a=0;a<3;++a)
+      if (generated_motor_steps_[a] != final_motor_steps_[a]) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
     ++generating_index_;
     if (generating_index_ >= planner_.count()) generation_complete_ = true;
-    else if (!initGeneratingMove(generating_index_)) {
-      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
-    }
+    else if (!initGeneratingMove(generating_index_)) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
   }
   return true;
 }
@@ -391,7 +260,7 @@ bool MotionController::startBatch() {
   generating_index_ = 0;
   motion_started_ = false;
   generation_complete_ = false;
-  phase_anchor_pending_ = true;
+  phase_anchor_pending_ = false;
   interval_continuity_valid_ = false;
   generated_interval_tail_q8_ = 0;
   if (!initGeneratingMove(0)) return false;
