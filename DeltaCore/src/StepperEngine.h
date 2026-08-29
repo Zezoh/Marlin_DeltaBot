@@ -68,6 +68,12 @@ private:
   volatile uint8_t active_pulse_axes_;
   volatile bool direction_pending_;
   volatile uint8_t pending_direction_bits_;
+
+  // Q8 interval ramp state. MotionController precomputes the slope, so the ISR
+  // only performs one signed 32-bit add and one shift per step event.
+  int32_t current_interval_q8_;
+  int32_t interval_delta_q8_;
+
   volatile HomeKind home_kind_;
   volatile int8_t home_result_;
   volatile uint8_t home_active_axes_;
@@ -83,6 +89,9 @@ private:
   void setEnableFast(bool enabled);
   void allStepsInactive();
   bool loadNextMotionBlock();
+  void initBlockTiming(const MotorBlock &block);
+  uint16_t currentMotionInterval() const;
+  void advanceBlockTiming();
   void motionISR();
   void homeISR();
   void pulseAxes(uint8_t axes, bool positive);
@@ -90,7 +99,6 @@ private:
   void stopTimerFromISR();
   void finishHomeFromISR(bool success);
   uint16_t intervalForTowerSpeed(float mm_s) const;
-  uint16_t effectiveInterval(const MotorBlock &block) const;
 };
 
 } // namespace deltacore
