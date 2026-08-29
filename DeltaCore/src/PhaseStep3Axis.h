@@ -33,6 +33,7 @@ public:
 
   void invalidate();
   void syncOutputSteps(const int32_t actual_steps[3]);
+  void clearDiagnostics() { boundary_corrections_ = 0; anchors_ = 0; }
 
 private:
   int32_t phase_q15_[3];
