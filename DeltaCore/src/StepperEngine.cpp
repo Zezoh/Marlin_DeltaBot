@@ -75,7 +75,31 @@ void StepperEngine::motionISR(){
 void StepperEngine::finishHomeFromISR(bool ok){stopTimerFromISR();mode_=MODE_IDLE;home_kind_=HOME_KIND_NONE;home_result_=ok?HOME_RESULT_DONE:HOME_RESULT_FAILED;}
 void StepperEngine::homeISR(){if(home_kind_==HOME_KIND_SEEK){uint8_t r=home_active_axes_;for(uint8_t a=0;a<3;++a){uint8_t bit=1U<<a;if((r&bit)&&endstopTriggered(a))r&=uint8_t(~bit);}home_active_axes_=r;if(!r){finishHomeFromISR(true);return;}if(home_events_done_>=home_event_limit_){fault_=FAULT_HOME_TRAVEL;setEnableFast(false);finishHomeFromISR(false);return;}pulseAxes(r,true);++home_events_done_;OCR1A=home_interval_ticks_;return;}if(home_kind_==HOME_KIND_BACKOFF){if(home_events_done_>=home_event_limit_){finishHomeFromISR(true);return;}pulseAxes(7,false);++home_events_done_;OCR1A=home_interval_ticks_;return;}fault_=FAULT_INTERNAL;setEnableFast(false);finishHomeFromISR(false);}
 
-void StepperEngine::onCompareA(){uint16_t e=TCNT1;if(e>max_isr_entry_ticks_)max_isr_entry_ticks_=e;if(mode_==MODE_MOTION){if(active_pulse_axes_)++pulse_overlap_events_;if(direction_pending_)++direction_overlap_events_;motionISR();}else if(mode_==MODE_HOME)homeISR();else stopTimerFromISR();}
+void StepperEngine::onCompareA(){
+  uint16_t e=TCNT1;
+  if(e>max_isr_entry_ticks_)max_isr_entry_ticks_=e;
+  if(mode_==MODE_MOTION){
+    // COMPA has higher AVR vector priority than COMPB. Under an unusually late
+    // compare, both flags can be pending and COMPA may run before COMPB has
+    // lowered the previous STEP pulse / applied a deferred DIR change. Never
+    // issue another DDA event into that electrical state: close the old pulse,
+    // commit DIR, and guarantee a full low-time before the next rising edge.
+    const bool stale_pulse=active_pulse_axes_!=0;
+    const bool stale_dir=direction_pending_;
+    if(stale_pulse||stale_dir){
+      if(stale_pulse)++pulse_overlap_events_;
+      if(stale_dir)++direction_overlap_events_;
+      onCompareB();
+      if(stale_pulse){
+        const uint16_t low_start=TCNT1;
+        while(uint16_t(TCNT1-low_start)<cfg::STEP_PULSE_TICKS){}
+      }
+    }
+    motionISR();
+  }
+  else if(mode_==MODE_HOME)homeISR();
+  else stopTimerFromISR();
+}
 void StepperEngine::onCompareB(){uint8_t p=active_pulse_axes_;for(uint8_t a=0;a<3;++a)if(p&(1U<<a))writeStep(a,false);active_pulse_axes_=0;if(direction_pending_){applyDirectionBits(pending_direction_bits_);direction_pending_=false;}TIMSK1&=uint8_t(~_BV(OCIE1B));}
 
 void StepperEngine::emergencyStop(FaultCode c){noInterrupts();TIMSK1=0;allStepsInactive();if(queue_)queue_->clearUnsafe();prefetch_valid_=false;block_active_=false;mode_=MODE_IDLE;home_kind_=HOME_KIND_NONE;home_result_=HOME_RESULT_FAILED;fault_=c;setEnableFast(false);interrupts();}
