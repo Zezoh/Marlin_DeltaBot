@@ -72,15 +72,15 @@ jobs:
             DeltaCore/test/simavr_ramps14_profile.c \
             -o /tmp/deltacore_ramps14_profile $LIBS -lm
 
-      - name: Profile short-segment hot path on real AVR cycles
-        continue-on-error: true
-        run: |
-          timeout 180s /tmp/deltacore_ramps14_profile \
-            DeltaCore/.pio/build/megaatmega2560/firmware.elf
-
       - name: Strict cycle-accurate ATmega2560 + RAMPS 1.4 + 3xA4988 HIL v2
         run: |
           timeout 180s /tmp/deltacore_ramps14_hil \
+            DeltaCore/.pio/build/megaatmega2560/firmware.elf
+
+      - name: Profile short-segment hot path on real AVR cycles
+        continue-on-error: true
+        run: |
+          timeout 90s /tmp/deltacore_ramps14_profile \
             DeltaCore/.pio/build/megaatmega2560/firmware.elf
 
       - name: Static RAM symbol map
