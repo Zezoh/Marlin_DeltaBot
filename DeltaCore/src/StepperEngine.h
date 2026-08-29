@@ -42,6 +42,7 @@ public:
   void enableMotors();
   void disableMotors();
   bool motorsEnabled() const { return motors_enabled_; }
+  void servicePrefetch();
   void kickMotion();
   bool motionBusy() const;
   bool idle() const;
@@ -69,7 +70,11 @@ private:
 
   MotionQueue *queue_;
   PhaseStep3Axis phase_;
-  MotorBlock current_block_;
+  MotorBlock block_a_;
+  MotorBlock block_b_;
+  MotorBlock *active_block_;
+  MotorBlock *prefetch_block_;
+  volatile bool prefetch_valid_;
   volatile Mode mode_;
   volatile bool block_active_;
   volatile bool motors_enabled_;
@@ -93,8 +98,6 @@ private:
   volatile bool direction_pending_;
   volatile uint8_t pending_direction_bits_;
 
-  // Q8 interval ramp state. MotionController precomputes the slope, so the ISR
-  // only performs one signed 32-bit add and one shift per phase event.
   int32_t current_interval_q8_;
   int32_t interval_delta_q8_;
 
@@ -106,6 +109,8 @@ private:
   volatile uint16_t home_interval_ticks_;
   static StepperEngine *instance_;
 
+  MotorBlock &currentBlock() { return *active_block_; }
+  const MotorBlock &currentBlock() const { return *active_block_; }
   void configureFastPins();
   void writeFast(volatile uint8_t *reg, uint8_t mask, bool high);
   void writeStep(uint8_t axis, bool active);
