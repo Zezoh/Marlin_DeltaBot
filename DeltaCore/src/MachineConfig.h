@@ -17,6 +17,7 @@ constexpr float DEFAULT_FEED_MM_S = 60.0f;
 constexpr float MAX_CARTESIAN_FEED_MM_S = 180.0f;
 constexpr float DEFAULT_ACCEL_MM_S2 = 1600.0f;
 constexpr float MAX_CARTESIAN_ACCEL_MM_S2 = 4500.0f;
+constexpr float DEFAULT_JERK_MM_S3 = 18000.0f;
 constexpr float MIN_PROFILE_SPEED_MM_S = 2.0f;
 constexpr float JUNCTION_DEVIATION_MM = 0.10f;
 
@@ -26,22 +27,25 @@ constexpr float MAX_TOWER_ACCEL_MM_S2 = 6000.0f;
 constexpr float TOWER_CURVATURE_ACCEL_FRACTION = 0.35f;
 constexpr float TOWER_TANGENTIAL_ACCEL_FRACTION = 0.65f;
 
-// Adaptive Delta segmentation.
+// Adaptive Delta segmentation. v0.4 samples the jerk-limited trajectory in
+// time, then splits further when Delta tower chord error requires it.
 constexpr float TARGET_SEGMENT_HZ = 100.0f;
-constexpr float MIN_SEGMENT_MM = 0.20f;
+constexpr float MIN_SEGMENT_TIME_S = 0.00125f;
 constexpr float MAX_SEGMENT_MM = 3.00f;
 constexpr float MAX_TOWER_CHORD_ERROR_MM = 0.0040f;
 constexpr uint8_t MAX_SEGMENT_SPLITS = 5;
 
-// Low-speed endpoint quantization protection retained from v0.3.1.
-constexpr float LOW_SPEED_SEGMENT_THRESHOLD_MM_S = 20.0f;
-constexpr uint8_t MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT = 48;
+// Phase-continuous step generation. Even when a slow segment contains less
+// than one physical tower step, keep several virtual phase updates so the
+// fractional actuator phase advances smoothly instead of waiting at a block
+// boundary. This is intentionally modest for the 16 MHz AVR.
+constexpr float PHASE_MIN_EVENT_HZ = 800.0f;
 
 // Burst look-ahead queue. M400 / FLUSH starts it immediately.
 constexpr uint8_t PATH_QUEUE_SIZE = 16;
 constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
 
-// Low-speed DDA phase oversampling. Auto remains deliberately mild.
+// Optional phase-event oversampling. Auto remains deliberately mild.
 constexpr uint8_t MAX_SMOOTHING_LEVEL = 2;
 constexpr uint8_t AUTO_SMOOTHING_MAX_LEVEL = 1;
 constexpr uint16_t SMOOTH_L1_INTERVAL_TICKS = 1800;
