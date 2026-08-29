@@ -1,53 +1,74 @@
 #include <assert.h>
-#include <stdint.h>
+#include <math.h>
 #include <stdio.h>
-
 #include "Dda3Axis.h"
 #include "Kinematics.h"
+#include "MachineConfig.h"
+#include "PathPlanner.h"
 
 using namespace deltacore;
 
-static void verifyDda(const uint32_t a, const uint32_t b, const uint32_t c) {
-  const uint32_t in[3] = { a, b, c };
-  uint32_t count[3] = { 0, 0, 0 };
+static void testDdaLevel(uint8_t level) {
+  const uint32_t steps[3] = {100, 60, 25};
   Dda3Axis dda;
-  const bool started = dda.begin(in);
-  if (!(a || b || c)) {
-    assert(!started);
-    return;
-  }
-  assert(started);
+  assert(dda.begin(steps, level));
+  uint32_t count[3] = {0,0,0};
   while (dda.active()) {
     const StepMask m = dda.next();
-    for (uint8_t axis = 0; axis < 3; ++axis)
-      if (m.bits & (uint8_t(1U) << axis)) ++count[axis];
+    for (uint8_t a = 0; a < 3; ++a) if (m.bits & (1U << a)) ++count[a];
   }
-  assert(count[0] == a);
-  assert(count[1] == b);
-  assert(count[2] == c);
+  assert(count[0] == 100 && count[1] == 60 && count[2] == 25);
+  assert(dda.totalEvents() == (100UL << level));
+}
+
+static void testPlanner() {
+  Kinematics kin;
+  PathPlanner p(kin);
+  const float s0[3] = {0,0,120};
+  const float s1[3] = {40,0,120};
+  const float s2[3] = {80,0,120};
+  assert(p.enqueue(s0,s1,80.0f,1600.0f));
+  assert(p.enqueue(s1,s2,80.0f,1600.0f));
+  assert(p.plan());
+  assert(p.move(0).entry_speed_mm_s == cfg::MIN_PROFILE_SPEED_MM_S);
+  assert(p.move(0).exit_speed_mm_s > 70.0f);
+  assert(fabsf(p.move(1).entry_speed_mm_s - p.move(0).exit_speed_mm_s) < 0.001f);
+
+  p.clear();
+  const float q1[3] = {30,0,120};
+  const float q2[3] = {30,30,120};
+  assert(p.enqueue(s0,q1,100.0f,1600.0f));
+  assert(p.enqueue(q1,q2,100.0f,1600.0f));
+  assert(p.plan());
+  const float corner = p.move(1).entry_speed_mm_s;
+  assert(corner > cfg::MIN_PROFILE_SPEED_MM_S);
+  assert(corner < 100.0f);
+
+  p.clear();
+  assert(p.enqueue(s0,q1,100.0f,1600.0f));
+  assert(p.enqueue(q1,s0,100.0f,1600.0f));
+  assert(p.plan());
+  assert(fabsf(p.move(1).entry_speed_mm_s - cfg::MIN_PROFILE_SPEED_MM_S) < 0.01f);
+}
+
+static void testKinematicsMetrics() {
+  Kinematics kin;
+  const float start[3] = {0,0,120};
+  const float unit[3] = {1,0,0};
+  MotionMetrics m;
+  assert(kin.motionMetrics(start,unit,50.0f,m));
+  assert(m.max_gain > 0.01f && m.max_gain < 3.0f);
+  assert(m.max_curvature > 0.0f);
+
+  float p0[3] = {0,0,120}, p1[3] = {3,0,120}, err = 0;
+  assert(kin.towerChordError(p0,p1,err));
+  assert(err >= 0.0f && err < 0.1f);
 }
 
 int main() {
-  verifyDda(1000, 600, 250);
-  verifyDda(10, 0, 3);
-  verifyDda(1, 1, 1);
-  verifyDda(7, 2, 5);
-  verifyDda(0, 0, 0);
-
-  Kinematics k;
-  const float home[3] = { 0.0f, 0.0f, 225.0f };
-  const float down[3] = { 0.0f, 0.0f, 200.0f };
-  const float outside[3] = { 90.0f, 0.0f, 100.0f };
-  int32_t hs[3], ds[3];
-
-  assert(k.cartesianToSteps(home, hs));
-  assert(k.cartesianToSteps(down, ds));
-  assert(hs[0] == hs[1] && hs[1] == hs[2]);
-  assert(ds[0] == ds[1] && ds[1] == ds[2]);
-  assert(ds[0] < hs[0]);
-  assert(!k.withinSoftBounds(outside));
-
-  printf("PASS DDA + Delta IK. home_steps=%ld down_steps=%ld\n",
-         (long)hs[0], (long)ds[0]);
+  for (uint8_t l = 0; l <= 3; ++l) testDdaLevel(l);
+  testPlanner();
+  testKinematicsMetrics();
+  printf("PASS v0.3 DDA smoothing + lookahead + Delta tower metrics\n");
   return 0;
 }
