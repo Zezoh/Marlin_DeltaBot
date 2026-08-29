@@ -9,9 +9,13 @@ static float minf3(const float a, const float b, const float c) {
   return v < c ? v : c;
 }
 
-PathPlanner::PathPlanner(Kinematics &kinematics) : kinematics_(kinematics), moves_{}, count_(0) {}
+PathPlanner::PathPlanner(Kinematics &kinematics)
+  : kinematics_(kinematics), moves_{}, head_(0), count_(0) {}
 
-void PathPlanner::clear() { count_ = 0; }
+void PathPlanner::clear() {
+  head_ = 0;
+  count_ = 0;
+}
 
 bool PathPlanner::prepareMove(PathMove &m, const float start[3], const float target[3],
                               float feed_mm_s, float requested_accel_mm_s2) {
@@ -67,7 +71,18 @@ bool PathPlanner::enqueue(const float start[3], const float target[3], const flo
   if (full()) return false;
   PathMove candidate;
   if (!prepareMove(candidate, start, target, feed_mm_s, requested_accel_mm_s2)) return false;
-  moves_[count_++] = candidate;
+  const uint8_t tail = physicalIndex(count_);
+  moves_[tail] = candidate;
+  ++count_;
+  return true;
+}
+
+bool PathPlanner::popFront(PathMove *out) {
+  if (!count_) return false;
+  if (out) *out = moves_[head_];
+  head_ = uint8_t((uint16_t(head_) + 1U) % cfg::PATH_QUEUE_SIZE);
+  --count_;
+  if (!count_) head_ = 0;
   return true;
 }
 
@@ -96,22 +111,18 @@ bool PathPlanner::plan(const float first_entry_speed_mm_s) {
 
   float first_entry = first_entry_speed_mm_s;
   if (first_entry < cfg::MIN_PROFILE_SPEED_MM_S) first_entry = cfg::MIN_PROFILE_SPEED_MM_S;
-  if (first_entry > moves_[0].nominal_speed_mm_s) first_entry = moves_[0].nominal_speed_mm_s;
-  moves_[0].max_entry_speed_mm_s = first_entry;
-  moves_[0].entry_speed_mm_s = first_entry;
+  if (first_entry > move(0).nominal_speed_mm_s) first_entry = move(0).nominal_speed_mm_s;
+  move(0).max_entry_speed_mm_s = first_entry;
+  move(0).entry_speed_mm_s = first_entry;
 
   for (uint8_t i = 1; i < count_; ++i) {
-    moves_[i].max_entry_speed_mm_s = junctionSpeed(moves_[i - 1], moves_[i]);
-    moves_[i].entry_speed_mm_s = moves_[i].max_entry_speed_mm_s;
+    move(i).max_entry_speed_mm_s = junctionSpeed(move(i - 1), move(i));
+    move(i).entry_speed_mm_s = move(i).max_entry_speed_mm_s;
   }
 
-  // Conservative tail: every finite planning window is feasible even if the
-  // stream stops after its last lookahead move. The last move is retained as
-  // an unexecuted sentinel when more input exists, so this cannot force an
-  // unsafe carry speed into the next window.
   float next_entry = cfg::MIN_PROFILE_SPEED_MM_S;
   for (int16_t i = int16_t(count_) - 1; i >= 1; --i) {
-    PathMove &m = moves_[uint8_t(i)];
+    PathMove &m = move(uint8_t(i));
     const float max_from_decel = JerkProfile::maxReachableSpeed(
       next_entry, m.length_mm, m.nominal_speed_mm_s, m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
     if (m.entry_speed_mm_s > max_from_decel) m.entry_speed_mm_s = max_from_decel;
@@ -119,35 +130,27 @@ bool PathPlanner::plan(const float first_entry_speed_mm_s) {
     next_entry = m.entry_speed_mm_s;
   }
 
-  // The first entry is a committed carry speed from the preceding window.
-  // It was computed against a stop-feasible sentinel, so do not rewrite it.
-  moves_[0].entry_speed_mm_s = first_entry;
+  move(0).entry_speed_mm_s = first_entry;
   for (uint8_t i = 1; i < count_; ++i) {
-    const PathMove &prev = moves_[i - 1];
+    const PathMove &prev = move(i - 1);
     const float reachable = JerkProfile::maxReachableSpeed(
       prev.entry_speed_mm_s, prev.length_mm, prev.nominal_speed_mm_s,
       prev.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
-    if (moves_[i].entry_speed_mm_s > reachable) moves_[i].entry_speed_mm_s = reachable;
+    if (move(i).entry_speed_mm_s > reachable) move(i).entry_speed_mm_s = reachable;
   }
 
   for (uint8_t i = 0; i < count_; ++i) {
-    moves_[i].exit_speed_mm_s = (i + 1U < count_)
-      ? moves_[i + 1U].entry_speed_mm_s
+    move(i).exit_speed_mm_s = (i + 1U < count_)
+      ? move(i + 1U).entry_speed_mm_s
       : cfg::MIN_PROFILE_SPEED_MM_S;
   }
   return true;
 }
 
-bool PathPlanner::seedPrepared(const PathMove &move) {
-  if (count_) return false;
-  moves_[0] = move;
-  count_ = 1;
-  return true;
-}
-
 void PathPlanner::latestTarget(float xyz[3]) const {
   if (!count_) return;
-  for (uint8_t i = 0; i < 3; ++i) xyz[i] = moves_[count_ - 1U].target[i];
+  const PathMove &m = move(uint8_t(count_ - 1U));
+  for (uint8_t i = 0; i < 3; ++i) xyz[i] = m.target[i];
 }
 
 } // namespace deltacore
