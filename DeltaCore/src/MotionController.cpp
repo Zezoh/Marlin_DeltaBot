@@ -13,7 +13,8 @@ MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper, K
     flush_requested_(false), last_enqueue_ms_(0), generating_index_(0), generated_distance_mm_(0),
     generated_motor_steps_{0,0,0}, final_motor_steps_{0,0,0}, profile_peak_mm_s_(0),
     profile_accel_distance_mm_(0), profile_decel_distance_mm_(0),
-    acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2), default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S) {}
+    acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2), default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S),
+    smoothing_mode_(-1) {}
 
 void MotionController::begin() {
   homed_ = false;
@@ -21,6 +22,7 @@ void MotionController::begin() {
   batch_active_ = false;
   generation_complete_ = false;
   flush_requested_ = false;
+  smoothing_mode_ = -1;
   planner_.clear();
   event_ = EVENT_NONE;
 }
@@ -48,6 +50,13 @@ bool MotionController::setAcceleration(const float mm_s2) {
   if (batch_active_ || !planner_.empty() || home_state_ != HOME_IDLE || stepper_.motionBusy()) return false;
   if (mm_s2 < 50.0f || mm_s2 > cfg::MAX_CARTESIAN_ACCEL_MM_S2) return false;
   acceleration_mm_s2_ = mm_s2;
+  return true;
+}
+
+bool MotionController::setSmoothingMode(const int8_t mode) {
+  if (batch_active_ || !planner_.empty() || home_state_ != HOME_IDLE || stepper_.motionBusy()) return false;
+  if (mode < -1 || mode > int8_t(cfg::MAX_SMOOTHING_LEVEL)) return false;
+  smoothing_mode_ = mode;
   return true;
 }
 
@@ -171,6 +180,21 @@ float MotionController::adaptiveSegmentLength(const PathMove &m, const float dis
   const float speed = profileSpeed(m, distance_mm);
   float ds = speed / cfg::TARGET_SEGMENT_HZ;
   if (ds < cfg::MIN_SEGMENT_MM) ds = cfg::MIN_SEGMENT_MM;
+
+  // v0.3 generated only ~10-20 master steps in many low-speed blocks. Since
+  // every Cartesian endpoint is rounded to integer tower steps, the resulting
+  // event rate changed in coarse audible increments from block to block. Keep
+  // roughly 48 real master events in a low-speed block before applying the
+  // geometric chord-error limit. This leaves DDA responsible for inter-axis
+  // phase distribution while reducing block-rate quantization.
+  if (speed <= cfg::LOW_SPEED_SEGMENT_THRESHOLD_MM_S) {
+    float estimated_master_steps_per_mm = m.max_tower_gain * cfg::STEPS_PER_MM;
+    if (estimated_master_steps_per_mm < 1.0f) estimated_master_steps_per_mm = 1.0f;
+    const float min_ds_for_steps =
+      float(cfg::MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT) / estimated_master_steps_per_mm;
+    if (ds < min_ds_for_steps) ds = min_ds_for_steps;
+  }
+
   if (ds > cfg::MAX_SEGMENT_MM) ds = cfg::MAX_SEGMENT_MM;
   const float remaining = m.length_mm - distance_mm;
   if (ds > remaining) ds = remaining;
@@ -181,6 +205,8 @@ float MotionController::adaptiveSegmentLength(const PathMove &m, const float dis
     m.start[2] + m.unit[2] * distance_mm
   };
 
+  // Geometry always wins over the low-speed event floor. If a long segment
+  // would exceed tower chord error, split it until it is safe.
   for (uint8_t split = 0; split < cfg::MAX_SEGMENT_SPLITS && ds > 0.01f; ++split) {
     const float d1 = distance_mm + ds;
     const float p1[3] = {
@@ -198,9 +224,17 @@ float MotionController::adaptiveSegmentLength(const PathMove &m, const float dis
 
 uint8_t MotionController::smoothingLevelForTicks(const uint32_t base_ticks) const {
   uint8_t level = 0;
-  if (base_ticks >= cfg::SMOOTH_L3_INTERVAL_TICKS) level = 3;
-  else if (base_ticks >= cfg::SMOOTH_L2_INTERVAL_TICKS) level = 2;
-  else if (base_ticks >= cfg::SMOOTH_L1_INTERVAL_TICKS) level = 1;
+
+  if (smoothing_mode_ >= 0) {
+    level = uint8_t(smoothing_mode_);
+  }
+  else {
+    if (base_ticks >= cfg::SMOOTH_L2_INTERVAL_TICKS) level = 2;
+    else if (base_ticks >= cfg::SMOOTH_L1_INTERVAL_TICKS) level = 1;
+    if (level > cfg::AUTO_SMOOTHING_MAX_LEVEL) level = cfg::AUTO_SMOOTHING_MAX_LEVEL;
+  }
+
+  if (level > cfg::MAX_SMOOTHING_LEVEL) level = cfg::MAX_SMOOTHING_LEVEL;
   while (level && (base_ticks >> level) < cfg::MIN_EVENT_INTERVAL_TICKS) --level;
   return level;
 }
