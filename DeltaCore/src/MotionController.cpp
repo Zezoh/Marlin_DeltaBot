@@ -181,12 +181,9 @@ float MotionController::adaptiveSegmentLength(const PathMove &m, const float dis
   float ds = speed / cfg::TARGET_SEGMENT_HZ;
   if (ds < cfg::MIN_SEGMENT_MM) ds = cfg::MIN_SEGMENT_MM;
 
-  // v0.3 generated only ~10-20 master steps in many low-speed blocks. Since
-  // every Cartesian endpoint is rounded to integer tower steps, the resulting
-  // event rate changed in coarse audible increments from block to block. Keep
-  // roughly 48 real master events in a low-speed block before applying the
-  // geometric chord-error limit. This leaves DDA responsible for inter-axis
-  // phase distribution while reducing block-rate quantization.
+  // Keep enough real master events in a slow block that endpoint rounding is a
+  // small perturbation. v0.3.2 no longer derives the timer frequency from this
+  // rounded event count; it is only a spatial/DDA granularity safeguard now.
   if (speed <= cfg::LOW_SPEED_SEGMENT_THRESHOLD_MM_S) {
     float estimated_master_steps_per_mm = m.max_tower_gain * cfg::STEPS_PER_MM;
     if (estimated_master_steps_per_mm < 1.0f) estimated_master_steps_per_mm = 1.0f;
@@ -205,8 +202,6 @@ float MotionController::adaptiveSegmentLength(const PathMove &m, const float dis
     m.start[2] + m.unit[2] * distance_mm
   };
 
-  // Geometry always wins over the low-speed event floor. If a long segment
-  // would exceed tower chord error, split it until it is safe.
   for (uint8_t split = 0; split < cfg::MAX_SEGMENT_SPLITS && ds > 0.01f; ++split) {
     const float d1 = distance_mm + ds;
     const float p1[3] = {
@@ -239,6 +234,12 @@ uint8_t MotionController::smoothingLevelForTicks(const uint32_t base_ticks) cons
   return level;
 }
 
+static uint16_t clampTimerTicks(uint32_t ticks) {
+  if (ticks < cfg::MIN_EVENT_INTERVAL_TICKS) ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
+  if (ticks > cfg::MAX_EVENT_INTERVAL_TICKS) ticks = cfg::MAX_EVENT_INTERVAL_TICKS;
+  return uint16_t(ticks);
+}
+
 bool MotionController::generateOneSegment() {
   if (generating_index_ >= planner_.count()) { generation_complete_ = true; return true; }
   if (queue_.full()) return false;
@@ -251,22 +252,30 @@ bool MotionController::generateOneSegment() {
     return initGeneratingMove(generating_index_);
   }
 
-  const float ds = adaptiveSegmentLength(m, generated_distance_mm_);
+  const float segment_start_distance = generated_distance_mm_;
+  const float ds = adaptiveSegmentLength(m, segment_start_distance);
   if (ds <= 0.0f) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
-  float next_distance = generated_distance_mm_ + ds;
+  float next_distance = segment_start_distance + ds;
   if (next_distance > m.length_mm) next_distance = m.length_mm;
+  const float actual_ds = next_distance - segment_start_distance;
 
+  const float startpoint[3] = {
+    m.start[0] + m.unit[0] * segment_start_distance,
+    m.start[1] + m.unit[1] * segment_start_distance,
+    m.start[2] + m.unit[2] * segment_start_distance
+  };
   const float endpoint[3] = {
     m.start[0] + m.unit[0] * next_distance,
     m.start[1] + m.unit[1] * next_distance,
     m.start[2] + m.unit[2] * next_distance
   };
+
   int32_t target_steps[3];
   if (!kinematics_.cartesianToSteps(endpoint, target_steps) || !towerWithinHome(target_steps)) {
     stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
   }
 
-  MotorBlock block = {{0,0,0}, 0, 0, cfg::MAX_EVENT_INTERVAL_TICKS};
+  MotorBlock block = {{0,0,0}, 0, 0, cfg::MAX_EVENT_INTERVAL_TICKS, 0};
   uint32_t event_count = 0;
   for (uint8_t axis = 0; axis < 3; ++axis) {
     const int32_t delta = target_steps[axis] - generated_motor_steps_[axis];
@@ -287,15 +296,52 @@ bool MotionController::generateOneSegment() {
     generated_distance_mm_ = m.length_mm;
 
   if (event_count) {
-    const float midpoint = generated_distance_mm_ - 0.5f * ds;
-    const float speed = profileSpeed(m, midpoint > 0.0f ? midpoint : 0.0f);
-    const float dt_s = ds / speed;
-    const float event_rate = float(event_count) / dt_s;
-    uint32_t ticks = uint32_t(float(cfg::TIMER_HZ) / event_rate + 0.5f);
-    if (ticks < cfg::MIN_EVENT_INTERVAL_TICKS) ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
-    if (ticks > cfg::MAX_EVENT_INTERVAL_TICKS) ticks = cfg::MAX_EVENT_INTERVAL_TICKS;
-    block.interval_ticks = uint16_t(ticks);
-    block.smoothing_level = smoothingLevelForTicks(ticks);
+    // Derive event frequency from the continuous tower displacement, not from
+    // the rounded integer event_count. This removes the residual low-speed
+    // frequency breathing caused by endpoint quantization (47,48,47... steps).
+    float tower_start[3], tower_end[3];
+    if (!kinematics_.cartesianToTower(startpoint, tower_start)
+        || !kinematics_.cartesianToTower(endpoint, tower_end)) {
+      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
+    }
+
+    float continuous_master_steps = 0.0f;
+    for (uint8_t axis = 0; axis < 3; ++axis) {
+      const float continuous_steps = fabsf(tower_end[axis] - tower_start[axis]) * cfg::STEPS_PER_MM;
+      if (continuous_steps > continuous_master_steps) continuous_master_steps = continuous_steps;
+    }
+    if (continuous_master_steps < 0.001f) continuous_master_steps = float(event_count);
+
+    float steps_per_path_mm = continuous_master_steps / actual_ds;
+    if (steps_per_path_mm < 0.001f) steps_per_path_mm = float(event_count) / actual_ds;
+
+    const float speed_start = profileSpeed(m, segment_start_distance);
+    const float speed_end = profileSpeed(m, next_distance);
+    float rate_start = steps_per_path_mm * speed_start;
+    float rate_end = steps_per_path_mm * speed_end;
+    if (rate_start < 1.0f) rate_start = 1.0f;
+    if (rate_end < 1.0f) rate_end = 1.0f;
+
+    uint32_t base_start = uint32_t(float(cfg::TIMER_HZ) / rate_start + 0.5f);
+    uint32_t base_end = uint32_t(float(cfg::TIMER_HZ) / rate_end + 0.5f);
+    base_start = clampTimerTicks(base_start);
+    base_end = clampTimerTicks(base_end);
+
+    const uint32_t slower_ticks = base_start > base_end ? base_start : base_end;
+    block.smoothing_level = smoothingLevelForTicks(slower_ticks);
+
+    uint32_t start_ticks = base_start >> block.smoothing_level;
+    uint32_t end_ticks = base_end >> block.smoothing_level;
+    block.interval_start_ticks = clampTimerTicks(start_ticks);
+    const uint16_t interval_end_ticks = clampTimerTicks(end_ticks);
+
+    const uint32_t virtual_events = event_count << block.smoothing_level;
+    if (virtual_events > 1U) {
+      const int32_t diff_ticks = int32_t(interval_end_ticks) - int32_t(block.interval_start_ticks);
+      block.interval_delta_q8 = (diff_ticks * 256L) / int32_t(virtual_events - 1U);
+    }
+    else block.interval_delta_q8 = 0;
+
     if (!queue_.enqueue(block)) return false;
     stepper_.kickMotion();
   }
