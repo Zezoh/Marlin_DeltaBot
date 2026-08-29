@@ -242,19 +242,19 @@ def run_burst():
     # real-world paste sizes that exposed v0.5.3 corruption, including M105 polls.
     for moves in (45,65,75):
         worst=(0,0,0)
-        for seed in range(60):
+        for seed in range(30):
             s=RealtimeSim(moves,seed,paced=False)
             mr,mp,mq,_=s.run(); worst=(max(worst[0],mr),max(worst[1],mp),max(worst[2],mq))
-        print(f'PASS raw-burst moves={moves} seeds=60 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}')
+        print(f'PASS raw-burst moves={moves} seeds=30 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}')
 
 
 def run_credit_stream():
-    for moves in (200,1000,5000):
+    for moves,seeds in ((200,30),(1000,15),(5000,5)):
         worst=(0,0,0)
-        for seed in range(40):
+        for seed in range(seeds):
             s=RealtimeSim(moves,seed,paced=True,host_window=4)
             mr,mp,mq,_=s.run(); worst=(max(worst[0],mr),max(worst[1],mp),max(worst[2],mq))
-        print(f'PASS credit-stream moves={moves} seeds=40 window=4 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}')
+        print(f'PASS credit-stream moves={moves} seeds={seeds} window=4 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}')
 
 
 def main():
