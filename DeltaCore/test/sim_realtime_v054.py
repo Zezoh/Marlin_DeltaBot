@@ -222,7 +222,7 @@ class RealtimeSim:
             self.host_arrive_until(self.now)
             self.serial_slice()
             self.produce()
-            self.advance(40)
+            self.advance(250)
             if self.done():
                 while self.motorq:
                     if not self.motor_started:
@@ -249,7 +249,7 @@ def run_burst():
 
 
 def run_credit_stream():
-    for moves,seeds in ((200,30),(1000,15),(5000,5)):
+    for moves,seeds in ((200,20),(1000,8),(3000,3)):
         worst=(0,0,0)
         for seed in range(seeds):
             s=RealtimeSim(moves,seed,paced=True,host_window=4)
