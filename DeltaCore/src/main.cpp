@@ -86,19 +86,22 @@ static void printStatus() {
   Serial.print(F(" pathq=")); Serial.print(motion.queuedMoves());
   Serial.print(F(" motorq=")); Serial.print(motion_queue.count());
   Serial.print(F(" accel=")); Serial.print(motion.acceleration(), 1);
+  Serial.print(F(" smooth=")); Serial.print(motion.smoothingMode());
   Serial.print(F(" fault=")); Serial.println(faultName(stepper.fault()));
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.3 motion settings:"));
+  Serial.println(F("DeltaCore v0.3.1 motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
   Serial.print(F("  max_cart_feed=")); Serial.println(cfg::MAX_CARTESIAN_FEED_MM_S, 1);
   Serial.print(F("  max_tower_feed=")); Serial.println(cfg::MAX_TOWER_SPEED_MM_S, 1);
   Serial.print(F("  max_tower_accel=")); Serial.println(cfg::MAX_TOWER_ACCEL_MM_S2, 1);
   Serial.print(F("  chord_error_mm=")); Serial.println(cfg::MAX_TOWER_CHORD_ERROR_MM, 4);
+  Serial.print(F("  low_speed_min_master_events=")); Serial.println(cfg::MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT);
   Serial.print(F("  lookahead_hold_ms=")); Serial.println(cfg::LOOKAHEAD_HOLD_MS);
-  Serial.println(F("  low_speed_smoothing=0..3 adaptive"));
+  Serial.print(F("  smoothing_mode=")); Serial.println(motion.smoothingMode());
+  Serial.println(F("    -1=auto(mild x2 max), 0=off, 1=x2, 2=x4"));
 }
 
 static bool commandStarts(const char *line, const char *cmd) {
@@ -117,22 +120,27 @@ static void processCommand(char *line) {
     return;
   }
 
+  // Basic host compatibility. These are intentionally harmless/no-op because
+  // DeltaCore does not own heaters, SD, or line-number state.
   if (commandStarts(line, "M105")) { Serial.println(F("ok T:0.0 /0.0 B:0.0 /0.0")); return; }
+  if (commandStarts(line, "M110")) { Serial.println(F("ok")); return; }
+
   if (commandStarts(line, "HELP")) {
-    Serial.println(F("DeltaCore v0.3: M119 G28 G0/G1 M400 M114 M204 M17 M18 M112 M999 M115 M503 STATUS"));
+    Serial.println(F("DeltaCore v0.3.1: M119 G28 G0/G1 M400/FLUSH M114 M204 M970 M17 M18 M112 M999 M115 M503 STATUS"));
     return;
   }
   if (commandStarts(line, "STATUS")) { printStatus(); return; }
   if (commandStarts(line, "M119")) { printEndstops(); return; }
   if (commandStarts(line, "M114")) { printPosition(); return; }
   if (commandStarts(line, "M503")) { printMotionSettings(); Serial.println(F("ok")); return; }
-  if (commandStarts(line, "M500")) { Serial.println(F("echo:EEPROM not implemented in DeltaCore v0.3")); Serial.println(F("ok")); return; }
+  if (commandStarts(line, "M500")) { Serial.println(F("echo:EEPROM not implemented in DeltaCore v0.3.1")); Serial.println(F("ok")); return; }
   if (commandStarts(line, "M502")) {
     if (!motion.setAcceleration(cfg::DEFAULT_ACCEL_MM_S2)) { Serial.println(F("error:BUSY")); return; }
+    if (!motion.setSmoothingMode(-1)) { Serial.println(F("error:BUSY")); return; }
     Serial.println(F("ok runtime motion defaults restored")); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.println(F("FIRMWARE_NAME:DeltaCore VERSION:0.3 BOARD:MKS_MINI_20 MCU:ATmega2560 MOTION:LOOKAHEAD+TOWER_LIMITS+ADAPTIVE_DELTA+SMOOTH_DDA"));
+    Serial.println(F("FIRMWARE_NAME:DeltaCore VERSION:0.3.1 BOARD:MKS_MINI_20 MCU:ATmega2560 MOTION:LOOKAHEAD+TOWER_LIMITS+ADAPTIVE_DELTA+SMOOTH_DDA"));
     return;
   }
 
@@ -156,7 +164,18 @@ static void processCommand(char *line) {
     }
     Serial.print(F("ok acceleration=")); Serial.println(motion.acceleration(), 1); return;
   }
-  if (commandStarts(line, "M400")) {
+  if (commandStarts(line, "M970")) {
+    float s;
+    if (!getParam(line, 'S', s)) {
+      Serial.print(F("ok smoothing_mode=")); Serial.println(motion.smoothingMode()); return;
+    }
+    const int8_t mode = int8_t(s);
+    if (fabsf(s - float(mode)) > 0.001f || !motion.setSmoothingMode(mode)) {
+      Serial.println(F("error:M970 use S-1..2 while idle")); return;
+    }
+    Serial.print(F("ok smoothing_mode=")); Serial.println(motion.smoothingMode()); return;
+  }
+  if (commandStarts(line, "M400") || commandStarts(line, "FLUSH")) {
     motion.flushMoves();
     Serial.println(F("ok lookahead flush requested")); return;
   }
@@ -175,11 +194,18 @@ static void processCommand(char *line) {
     float feed_mm_s = motion.feedrate();
     if (getParam(line, 'F', v)) feed_mm_s = v / 60.0f;
     const RequestResult r = motion.requestMove(xyz, feed_mm_s);
-    if (r != REQUEST_OK) { Serial.print(F("error:MOVE ")); Serial.println(requestName(r)); return; }
+    if (r != REQUEST_OK) {
+      Serial.print(F("error:MOVE ")); Serial.print(requestName(r));
+      Serial.print(F(" pathq=")); Serial.print(motion.queuedMoves());
+      Serial.print(F(" moving=")); Serial.println(motion.moving() ? 1 : 0);
+      return;
+    }
     Serial.print(F("ok queued path=")); Serial.println(motion.queuedMoves()); return;
   }
 
-  Serial.println(F("error:UNKNOWN_COMMAND; send HELP"));
+  Serial.print(F("error:UNKNOWN_COMMAND ["));
+  Serial.print(line);
+  Serial.println(F("]"));
 }
 
 static void serviceSerial() {
@@ -199,11 +225,12 @@ void setup() {
   stepper.begin(motion_queue);
   motion.begin();
   Serial.println();
-  Serial.println(F("DeltaCore 0.3 - Mega2560 / MKS MINI v2.0"));
-  Serial.println(F("Motion: burst look-ahead + junction deviation + tower-space speed/accel limits"));
-  Serial.println(F("Delta: adaptive chord-error segmentation; Stepper: DDA low-speed oversampling L0..L3"));
+  Serial.println(F("DeltaCore 0.3.1 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("Motion: look-ahead + junction deviation + tower-space speed/accel limits"));
+  Serial.println(F("Delta: adaptive chord-error segmentation with low-speed event-floor"));
+  Serial.println(F("Stepper: mild adaptive DDA smoothing; M970 S0/S1/S2 for A-B tests"));
   Serial.println(F("SAFE BOOT: motors disabled, G28 required before G1"));
-  Serial.println(F("Sequential G1 commands queue for 35ms; M400 flushes immediately."));
+  Serial.println(F("Sequential G1 commands collect for 200ms; M400 or FLUSH starts immediately."));
   Serial.println(F("ok READY"));
 }
 
