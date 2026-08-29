@@ -20,14 +20,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Host math tests
+      - name: Host motion tests
         run: |
           g++ -std=c++11 -Wall -Wextra -pedantic -IDeltaCore/src \
             DeltaCore/test/test_math.cpp \
             DeltaCore/src/Dda3Axis.cpp \
             DeltaCore/src/Kinematics.cpp \
-            -o /tmp/deltacore_math_test
-          /tmp/deltacore_math_test
+            DeltaCore/src/PathPlanner.cpp \
+            -o /tmp/deltacore_motion_test
+          /tmp/deltacore_motion_test
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -43,6 +44,6 @@ jobs:
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560
+          name: DeltaCore-Mega2560-v0.3
           path: DeltaCore/.pio/build/megaatmega2560/firmware.hex
           if-no-files-found: error
