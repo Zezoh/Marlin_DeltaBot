@@ -38,6 +38,9 @@ jobs:
       - name: Rolling stream state-machine stress simulation
         run: python3 DeltaCore/test/sim_stream_v053.py
 
+      - name: Realtime UART and adaptive-refill stress simulation
+        run: python3 DeltaCore/test/sim_realtime_v054.py
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -60,7 +63,7 @@ jobs:
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560-v0.5.3
+          name: DeltaCore-Mega2560-v0.5.4
           path: |
             DeltaCore/.pio/build/megaatmega2560/firmware.hex
             DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
