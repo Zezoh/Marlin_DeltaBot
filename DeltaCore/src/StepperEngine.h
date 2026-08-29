@@ -42,6 +42,7 @@ public:
   void enableMotors();
   void disableMotors();
   bool motorsEnabled() const { return motors_enabled_; }
+  bool setPhaseAnchorQ15(const int32_t q15[3]);
   void servicePrefetch();
   void kickMotion();
   bool motionBusy() const;
@@ -75,6 +76,8 @@ private:
   MotorBlock *active_block_;
   MotorBlock *prefetch_block_;
   volatile bool prefetch_valid_;
+  int32_t phase_anchor_q15_[3];
+  volatile bool phase_anchor_valid_;
   volatile Mode mode_;
   volatile bool block_active_;
   volatile bool motors_enabled_;
@@ -97,10 +100,8 @@ private:
   volatile uint8_t active_pulse_axes_;
   volatile bool direction_pending_;
   volatile uint8_t pending_direction_bits_;
-
   int32_t current_interval_q8_;
   int32_t interval_delta_q8_;
-
   volatile HomeKind home_kind_;
   volatile int8_t home_result_;
   volatile uint8_t home_active_axes_;
