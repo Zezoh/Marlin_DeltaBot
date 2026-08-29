@@ -34,14 +34,67 @@ float JerkProfile::maxReachableSpeed(const float v0, const float distance_mm,
                                      const float speed_cap, const float max_accel,
                                      const float max_jerk) {
   if (distance_mm <= 0.0f || speed_cap <= v0) return v0;
-  if (transitionDistance(v0, speed_cap, max_accel, max_jerk) <= distance_mm) return speed_cap;
-  float lo = v0, hi = speed_cap;
-  for (uint8_t i = 0; i < 16; ++i) {
-    const float mid = 0.5f * (lo + hi);
-    if (transitionDistance(v0, mid, max_accel, max_jerk) <= distance_mm) lo = mid;
-    else hi = mid;
+  if (max_accel <= 0.0f || max_jerk <= 0.0f) return v0;
+
+  const float delta_cap = speed_cap - v0;
+  const float accel_delta = (max_accel * max_accel) / max_jerk;
+
+  // Exact transition distance to the requested cap.  This avoids entering a
+  // solver when the cap is already reachable and costs at most one sqrtf.
+  float cap_distance;
+  if (delta_cap <= accel_delta) {
+    cap_distance = (2.0f * v0 + delta_cap) * sqrtf(delta_cap / max_jerk);
+  } else {
+    cap_distance = 0.5f * (2.0f * v0 + delta_cap)
+                 * (delta_cap / max_accel + max_accel / max_jerk);
   }
-  return lo;
+  if (cap_distance <= distance_mm) return speed_cap;
+
+  float delta = 0.0f;
+  const float accel_over_jerk = max_accel / max_jerk;
+  const float boundary_distance = (2.0f * v0 + accel_delta) * accel_over_jerk;
+
+  if (distance_mm >= boundary_distance) {
+    // Full-acceleration (trapezoidal S-curve) branch.
+    //
+    //   S = 1/2 (2*v0 + d) (d/A + A/J)
+    //
+    // Solving the quadratic directly removes the old 16-iteration search and
+    // all of its repeated sqrtf calls.
+    const float q = 2.0f * v0 - accel_delta;
+    float disc = q * q + 8.0f * max_accel * distance_mm;
+    if (disc < 0.0f) disc = 0.0f;
+    delta = 0.5f * (sqrtf(disc) - (2.0f * v0 + accel_delta));
+    if (delta < accel_delta) delta = accel_delta;
+  } else {
+    // Triangular S-curve branch.  Let x=sqrt(dv). Then
+    //
+    //   x^3 + 2*v0*x = S*sqrt(J)
+    //
+    // is strictly monotonic for x>=0.  Bisection in x needs only multiply/add
+    // operations; there is no sqrt in the loop.  17 iterations keeps the
+    // resulting speed error below a few 1e-3 mm/s over the machine envelope,
+    // while remaining dramatically cheaper on ATmega2560 than the legacy
+    // transitionDistance() bisection.
+    const float sqrt_jerk = sqrtf(max_jerk);
+    const float triangular_cap = delta_cap < accel_delta ? delta_cap : accel_delta;
+    float lo = 0.0f;
+    float hi = (triangular_cap >= accel_delta)
+      ? max_accel / sqrt_jerk
+      : sqrtf(triangular_cap);
+    const float rhs = distance_mm * sqrt_jerk;
+    for (uint8_t i = 0; i < 17; ++i) {
+      const float x = 0.5f * (lo + hi);
+      const float lhs = x * x * x + 2.0f * v0 * x;
+      if (lhs <= rhs) lo = x;
+      else hi = x;
+    }
+    delta = lo * lo;
+  }
+
+  if (delta < 0.0f) delta = 0.0f;
+  if (delta > delta_cap) delta = delta_cap;
+  return v0 + delta;
 }
 
 void JerkProfile::resetBuild(const float start_speed) {
