@@ -26,9 +26,6 @@ static char line_buffer[cfg::SERIAL_LINE_SIZE];
 static uint8_t line_length = 0;
 static bool discard_line = false;
 
-// Commands received while a true ACK barrier (G28/M400) is active are queued
-// here instead of being executed out of order. Monitor/emergency commands stay
-// live so long moves do not starve the USB RX path.
 constexpr uint8_t DEFERRED_QUEUE_SIZE = 8;
 constexpr uint8_t DEFERRED_LINE_SIZE = 96;
 static char deferred_lines[DEFERRED_QUEUE_SIZE][DEFERRED_LINE_SIZE];
@@ -252,7 +249,7 @@ static void printPerformance(const bool path_summary) {
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.4.2 motion settings:"));
+  Serial.println(F("DeltaCore v0.4.3 motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
   Serial.print(F("  jerk_limit=")); Serial.println(motion.jerkLimit(), 0);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
@@ -338,7 +335,7 @@ static void processCommand(char *raw_line, bool count_rx = true) {
   }
 
   if (commandStarts(line, "HELP")) {
-    Serial.println(F("DeltaCore v0.4.2: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
+    Serial.println(F("DeltaCore v0.4.3: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
     ack(); return;
   }
   if (commandStarts(line, "STATUS") || commandStarts(line, "M973")) { printStatus(); ack(); return; }
@@ -358,9 +355,9 @@ static void processCommand(char *raw_line, bool count_rx = true) {
     Serial.println(F("echo:runtime motion defaults restored")); ack(); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.4.2 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
+    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.4.3 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
     Serial.print(bootSessionId());
-    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+ADAPTIVE_DELTA+PHASE_CONTINUOUS_ABC+QUEUE_PREFILL DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
+    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+ADAPTIVE_DELTA+PHASE_CONTINUOUS_ABC+QUEUE_PREFILL+KICK_RECOVERY DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
     ack(); return;
   }
 
@@ -492,11 +489,11 @@ void setup() {
   motion.begin();
 
   Serial.println();
-  Serial.println(F("DeltaCore 0.4.2 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.4.3 - Mega2560 / MKS MINI v2.0"));
   printResetCause();
   Serial.println(F("Motion: jerk-limited look-ahead + adaptive Delta + phase-continuous A/B/C"));
   Serial.println(F("Stepper: persistent Q15 actuator phase + Q8 Timer1 event ramp; no float in ISR"));
-  Serial.println(F("Scheduler: prefill motor queue before Timer1 start for compute-heavy Delta paths"));
+  Serial.println(F("Scheduler: prefill + automatic Timer1 kick recovery after queue refill"));
   Serial.println(F("Serial: barrier-aware deferred command queue; M105/M112 remain immediate"));
   Serial.println(F("Debug: M971 PERF includes phase continuity + timer/queue health"));
   Serial.println(F("SAFE BOOT: motors disabled, G28 required before G1"));
@@ -506,6 +503,12 @@ void setup() {
 void loop() {
   serviceSerial();
   motion.service();
+  // During an exceptionally compute-heavy Delta segment the ISR may consume
+  // the queue before the main loop refills it. StepperEngine then stops Timer1.
+  // motion.service() can refill the queue, but v0.4.2 had no restart path once
+  // motion_started_ was already true. kickMotion() is intentionally idempotent:
+  // it does nothing while Timer1 motion is active and restarts only when idle.
+  stepper.kickMotion();
 
   const ControllerEvent event = motion.consumeEvent();
   if (event == EVENT_HOME_DONE) {
