@@ -145,6 +145,7 @@ static void printPosition() {
 }
 
 static void printStatus() {
+  StepperStats s; stepper.snapshotStats(s);
   Serial.print(F("STATUS session=")); Serial.print(bootSessionId());
   Serial.print(F(" up_ms=")); Serial.print(millis());
   Serial.print(F(" busy=")); Serial.print(motion.busy() ? 1 : 0);
@@ -155,7 +156,11 @@ static void printStatus() {
   Serial.print(F(" motorq=")); Serial.print(motion_queue.count());
   Serial.print(F(" q_hi=")); Serial.print(motion_queue.highWater());
   Serial.print(F(" accel=")); Serial.print(motion.acceleration(), 1);
+  Serial.print(F(" jerk=")); Serial.print(motion.jerkLimit(), 0);
   Serial.print(F(" smooth=")); Serial.print(motion.smoothingMode());
+  Serial.print(F(" phase_anchor=")); Serial.print(s.phase_anchors);
+  Serial.print(F(" phase_corr=")); Serial.print(s.phase_boundary_corrections);
+  Serial.print(F(" phase_fault=")); Serial.print(s.phase_faults);
   Serial.print(F(" rx=")); Serial.print(rx_lines);
   Serial.print(F(" parse_ovf=")); Serial.print(parser_overflows);
   Serial.print(F(" unknown=")); Serial.print(unknown_commands);
@@ -183,29 +188,37 @@ static void printPerformance(const bool path_summary) {
   Serial.print(F(" q_hi=")); Serial.print(motion_queue.highWater());
   Serial.print(F(" starves=")); Serial.print(starves);
   Serial.print(F(" guards=")); Serial.print(s.timer_guard_hits);
+  Serial.print(F(" phase_anchor=")); Serial.print(s.phase_anchors);
+  Serial.print(F(" phase_corr=")); Serial.print(s.phase_boundary_corrections);
+  Serial.print(F(" phase_fault=")); Serial.print(s.phase_faults);
   Serial.print(F(" isr_entry_max_ticks=")); Serial.print(s.max_isr_entry_ticks);
   Serial.print(F(" interval_ticks=")); Serial.print(s.min_interval_ticks);
   Serial.print(F("..")); Serial.print(s.max_interval_ticks);
   Serial.print(F(" health="));
-  if (starves == 0 && s.timer_guard_hits == 0) Serial.println(F("CLEAN"));
-  else if (starves == 0) Serial.println(F("TIMING_GUARDED"));
-  else Serial.println(F("QUEUE_STARVE"));
+  if (s.phase_faults) Serial.println(F("PHASE_FAULT"));
+  else if (starves) Serial.println(F("QUEUE_STARVE"));
+  else if (s.timer_guard_hits) Serial.println(F("TIMING_GUARDED"));
+  else if (s.phase_boundary_corrections) Serial.println(F("PHASE_CORRECTED"));
+  else Serial.println(F("CLEAN"));
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.3.5 motion settings:"));
+  Serial.println(F("DeltaCore v0.4.0 motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
+  Serial.print(F("  jerk_limit=")); Serial.println(motion.jerkLimit(), 0);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
   Serial.print(F("  max_cart_feed=")); Serial.println(cfg::MAX_CARTESIAN_FEED_MM_S, 1);
   Serial.print(F("  max_tower_feed=")); Serial.println(cfg::MAX_TOWER_SPEED_MM_S, 1);
   Serial.print(F("  max_tower_accel=")); Serial.println(cfg::MAX_TOWER_ACCEL_MM_S2, 1);
   Serial.print(F("  chord_error_mm=")); Serial.println(cfg::MAX_TOWER_CHORD_ERROR_MM, 4);
-  Serial.print(F("  low_speed_min_master_events=")); Serial.println(cfg::MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT);
+  Serial.print(F("  target_segment_hz=")); Serial.println(cfg::TARGET_SEGMENT_HZ, 1);
+  Serial.print(F("  phase_min_event_hz=")); Serial.println(cfg::PHASE_MIN_EVENT_HZ, 1);
   Serial.print(F("  lookahead_hold_ms=")); Serial.println(cfg::LOOKAHEAD_HOLD_MS);
   Serial.print(F("  smoothing_mode=")); Serial.println(motion.smoothingMode());
   Serial.print(F("  debug_level=")); Serial.println(debug_level);
   Serial.print(F("  host_keepalive_ms=")); Serial.println(host_keepalive_ms);
-  Serial.println(F("  timing=time-domain Q8 interval ramp from continuous tower displacement"));
+  Serial.println(F("  trajectory=7-phase time-domain jerk-limited S-curve"));
+  Serial.println(F("  stepgen=phase-continuous Q15 A/B/C + Q8 Timer1 interval ramp"));
   Serial.println(F("  serial_rx=256 serial_tx=128 protocol=one-command-one-ACK"));
   Serial.println(F("  boot_session=validated wear-level EEPROM ring32"));
 }
@@ -227,7 +240,8 @@ static void beginPathTracking() {
     Serial.print(F("DBG PATH session=")); Serial.print(bootSessionId());
     Serial.print(F(" id=")); Serial.print(path_id);
     Serial.print(F(" state=COLLECT hold_ms=")); Serial.print(cfg::LOOKAHEAD_HOLD_MS);
-    Serial.print(F(" smooth=")); Serial.println(motion.smoothingMode());
+    Serial.print(F(" smooth=")); Serial.print(motion.smoothingMode());
+    Serial.print(F(" jerk=")); Serial.println(motion.jerkLimit(), 0);
   }
 }
 
@@ -274,7 +288,7 @@ static void processCommand(char *raw_line) {
   }
 
   if (commandStarts(line, "HELP")) {
-    Serial.println(F("DeltaCore v0.3.5: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
+    Serial.println(F("DeltaCore v0.4.0: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
     ack(); return;
   }
   if (commandStarts(line, "STATUS") || commandStarts(line, "M973")) { printStatus(); ack(); return; }
@@ -294,9 +308,9 @@ static void processCommand(char *raw_line) {
     Serial.println(F("echo:runtime motion defaults restored")); ack(); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.3.5 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
+    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.4.0 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
     Serial.print(bootSessionId());
-    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+ADAPTIVE_DELTA+TIME_RAMP_DDA DEBUG:PERF+BOOT_SESSION SERIAL:ROBUST_ACK"));
+    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+ADAPTIVE_DELTA+PHASE_CONTINUOUS_ABC DEBUG:PERF+BOOT_SESSION SERIAL:ROBUST_ACK"));
     ack(); return;
   }
 
@@ -403,6 +417,8 @@ static void serviceDebugHeartbeat() {
   Serial.print(F(" motorq=")); Serial.print(motion_queue.count());
   Serial.print(F(" rx=")); Serial.print(rx_lines);
   Serial.print(F(" guards=")); Serial.print(s.timer_guard_hits);
+  Serial.print(F(" phase_corr=")); Serial.print(s.phase_boundary_corrections);
+  Serial.print(F(" phase_fault=")); Serial.print(s.phase_faults);
   Serial.print(F(" fault=")); Serial.println(faultName(stepper.fault()));
 }
 
@@ -413,11 +429,12 @@ void setup() {
   motion.begin();
 
   Serial.println();
-  Serial.println(F("DeltaCore 0.3.5 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.4.0 - Mega2560 / MKS MINI v2.0"));
   printResetCause();
-  Serial.println(F("Motion: look-ahead + tower limits + adaptive Delta + continuous Q8 time-ramp DDA"));
+  Serial.println(F("Motion: jerk-limited look-ahead + adaptive Delta + phase-continuous A/B/C"));
+  Serial.println(F("Stepper: persistent Q15 actuator phase + Q8 Timer1 event ramp; no float in ISR"));
   Serial.println(F("Serial: RX256/TX128, one-command-one-ACK, G28/M400 keepalive barriers"));
-  Serial.println(F("Debug: validated wear-level session + uptime + M971 PERF + M973 STATUS + M111 S0..2"));
+  Serial.println(F("Debug: M971 PERF includes phase continuity + timer/queue health"));
   Serial.println(F("SAFE BOOT: motors disabled, G28 required before G1"));
   Serial.println(F("ok READY"));
 }
