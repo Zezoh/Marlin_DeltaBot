@@ -249,7 +249,7 @@ static void printPerformance(const bool path_summary) {
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.5.4 motion settings:"));
+  Serial.println(F("DeltaCore v0.5.5 motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
   Serial.print(F("  jerk_limit=")); Serial.println(motion.jerkLimit(), 0);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
@@ -357,9 +357,9 @@ static void processCommand(char *raw_line, bool count_rx = true) {
     Serial.println(F("echo:runtime motion defaults restored")); ack(); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.5.4 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
+    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.5.5 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
     Serial.print(bootSessionId());
-    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+FAST_DELTA_GEN+INTEGER_DDA+EXACT_SEGMENT_TIME+ROLLING_COMMIT+SERIAL_FAIR+ADAPTIVE_REFILL DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
+    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+FAST_DELTA_GEN+INTEGER_DDA+EXACT_SEGMENT_TIME+ROLLING_COMMIT+SERIAL_FAIR+ADAPTIVE_REFILL+UNDERRUN_REFILL+TAIL_GUARD DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
     ack(); return;
   }
 
@@ -507,11 +507,11 @@ void setup() {
   motion.begin();
 
   Serial.println();
-  Serial.println(F("DeltaCore 0.5.4 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.5.5 - Mega2560 / MKS MINI v2.0"));
   printResetCause();
   Serial.println(F("Motion: rolling-commit jerk look-ahead + adaptive producer + curvature-bounded Delta segments"));
   Serial.println(F("Stepper: deterministic integer A/B/C DDA + exact segment tick budget"));
-  Serial.println(F("Scheduler: prefill + automatic Timer1 kick recovery after queue refill"));
+  Serial.println(F("Scheduler: deep prefill + underrun reservoir rebuild before Timer1 restart"));
   Serial.println(F("Serial: barrier-aware deferred command queue; M105/M112 remain immediate"));
   Serial.println(F("Debug: M971 PERF includes deterministic timer/queue health"));
   Serial.println(F("SAFE BOOT: motors disabled, G28 required before G1"));
@@ -524,6 +524,15 @@ void loop() {
   stepper.kickMotion();
   motion.service();
   stepper.kickMotion();
+
+  // When the UART has been drained and the motor reservoir is low, spend one
+  // additional main-loop slice on trajectory production. This cannot delay an
+  // already-buffered M112/M105 line because RX is required to be empty here.
+  if (Serial.available() == 0 && motion.moving() &&
+      motion_queue.count() < cfg::MOTION_REFILL_LOW_WATER) {
+    motion.service();
+    stepper.kickMotion();
+  }
 
   const ControllerEvent event = motion.consumeEvent();
   if (event == EVENT_HOME_DONE) {

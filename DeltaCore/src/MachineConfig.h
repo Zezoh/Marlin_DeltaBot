@@ -68,12 +68,12 @@ constexpr uint16_t STARTUP_EVENT_TICKS = 200;
 // missed compare and a long apparent stall. 24 ticks = 12 us at 2 MHz.
 constexpr uint16_t TIMER_ISR_GUARD_TICKS = 24;
 
-constexpr uint8_t MOTION_QUEUE_SIZE = 32;
-constexpr uint8_t MOTION_START_PREFILL_BLOCKS = 24;
-constexpr uint8_t MOTION_REFILL_LOW_WATER = 14;
-constexpr uint8_t MOTION_REFILL_TARGET = 28;
-constexpr uint8_t MOTION_REFILL_MAX_BURST = 8;
-constexpr uint16_t MOTION_REFILL_BUDGET_US = 1800;
+constexpr uint8_t MOTION_QUEUE_SIZE = 64;
+constexpr uint8_t MOTION_START_PREFILL_BLOCKS = 48;
+constexpr uint8_t MOTION_REFILL_LOW_WATER = 24;
+constexpr uint8_t MOTION_REFILL_TARGET = 56;
+constexpr uint8_t MOTION_REFILL_MAX_BURST = 12;
+constexpr uint16_t MOTION_REFILL_BUDGET_US = 6000;
 constexpr uint8_t SERIAL_LINE_SIZE = 192;
 constexpr uint32_t DEBUG_HEARTBEAT_MS = 5000UL;
 

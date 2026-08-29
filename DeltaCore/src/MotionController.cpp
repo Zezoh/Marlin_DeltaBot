@@ -224,20 +224,30 @@ bool MotionController::startNextPlannedMove() {
   return true;
 }
 
-float MotionController::adaptiveSegmentDuration(const PathMove &, const float time_s) const {
+float MotionController::adaptiveSegmentDuration(const PathMove &, const float time_s,
+                                                  JerkSample &endpoint_sample) const {
   const float remaining_time = profile_.totalTime() - time_s;
   if (remaining_time <= 0.0f) return 0.0f;
   float dt = 1.0f / cfg::TARGET_SEGMENT_HZ;
   if (dt > remaining_time) dt = remaining_time;
-  const JerkSample s0 = profile_.sample(time_s);
+
+  // generated_distance_mm_ is already the exact profile sample at time_s. Avoid
+  // sampling the same point again on every segment. In the common no-split case
+  // this reduces trajectory sampling from three calls per MotorBlock to one.
+  endpoint_sample = profile_.sample(time_s + dt);
+  float ds = endpoint_sample.distance_mm - generated_distance_mm_;
+  if (ds <= segment_length_limit_mm_) return dt;
+
   for (uint8_t split = 0; split < cfg::MAX_SEGMENT_SPLITS; ++split) {
-    const JerkSample s1 = profile_.sample(time_s + dt);
-    const float ds = s1.distance_mm - s0.distance_mm;
-    if (ds <= segment_length_limit_mm_) break;
-    dt *= 0.5f;
-    if (dt <= cfg::MIN_SEGMENT_TIME_S) break;
+    float next_dt = dt * 0.5f;
+    if (next_dt < cfg::MIN_SEGMENT_TIME_S) next_dt = cfg::MIN_SEGMENT_TIME_S;
+    if (next_dt >= dt) break;
+    dt = next_dt;
+    if (dt > remaining_time) dt = remaining_time;
+    endpoint_sample = profile_.sample(time_s + dt);
+    ds = endpoint_sample.distance_mm - generated_distance_mm_;
+    if (ds <= segment_length_limit_mm_ || dt <= cfg::MIN_SEGMENT_TIME_S) break;
   }
-  if (dt > remaining_time) dt = remaining_time;
   return dt;
 }
 
@@ -248,24 +258,37 @@ bool MotionController::generateOneSegment() {
 
   const float remaining_time = profile_.totalTime() - generated_time_s_;
   if (remaining_time <= 1.0e-7f) return false;
-  const float dt = adaptiveSegmentDuration(m, generated_time_s_);
+  JerkSample js1 = {0.0f, 0.0f, 0.0f};
+  const float dt = adaptiveSegmentDuration(m, generated_time_s_, js1);
   if (dt <= 0.0f) return false;
 
   float next_time = generated_time_s_ + dt;
   if (next_time > profile_.totalTime()) next_time = profile_.totalTime();
   const float actual_dt = next_time - generated_time_s_;
-  const JerkSample js1 = profile_.sample(next_time);
-  const float endpoint[3] = {
-    m.start[0] + m.unit[0] * js1.distance_mm,
-    m.start[1] + m.unit[1] * js1.distance_mm,
-    m.start[2] + m.unit[2] * js1.distance_mm
-  };
+  const bool final_segment = next_time >= profile_.totalTime() - 1.0e-7f;
+
+  float endpoint[3];
+  if (final_segment) {
+    // Never reconstruct the final Cartesian endpoint through unit*distance. This
+    // guarantees the last block lands on the exact commanded target and avoids
+    // half-step rounding differences at move boundaries.
+    for (uint8_t a = 0; a < 3; ++a) endpoint[a] = m.target[a];
+    js1 = profile_.sample(profile_.totalTime());
+  } else {
+    endpoint[0] = m.start[0] + m.unit[0] * js1.distance_mm;
+    endpoint[1] = m.start[1] + m.unit[1] * js1.distance_mm;
+    endpoint[2] = m.start[2] + m.unit[2] * js1.distance_mm;
+  }
 
   float tower_end[3];
   int32_t target_steps[3];
   if (!kinematics_.cartesianToTower(endpoint, tower_end)) return false;
-  for (uint8_t a = 0; a < 3; ++a)
-    target_steps[a] = int32_t(lroundf(tower_end[a] * cfg::STEPS_PER_MM));
+  if (final_segment) {
+    for (uint8_t a = 0; a < 3; ++a) target_steps[a] = final_motor_steps_[a];
+  } else {
+    for (uint8_t a = 0; a < 3; ++a)
+      target_steps[a] = int32_t(lroundf(tower_end[a] * cfg::STEPS_PER_MM));
+  }
   if (!towerWithinHome(target_steps)) return false;
 
   MotorBlock block = {};
@@ -279,8 +302,21 @@ bool MotionController::generateOneSegment() {
     if (d >= 0) block.direction_bits |= uint8_t(1U << a);
   }
   block.event_count = max_steps ? max_steps : 1U;
-  const uint32_t total_ticks = uint32_t(actual_dt * float(cfg::TIMER_HZ) + 0.5f);
+  uint32_t total_ticks = uint32_t(actual_dt * float(cfg::TIMER_HZ) + 0.5f);
   if (total_ticks < block.event_count) return false;
+
+  // A jerk profile can end a few tens of microseconds after an exact 10 ms
+  // boundary (e.g. 60.0369 ms). The old code emitted that microscopic tail as
+  // its own block, then rejected it because 74 ticks < the 120-tick timer floor.
+  // For the FINAL block only, stretch the tick budget to the minimum schedulable
+  // duration. Position remains exact; the time correction is sub-millisecond.
+  const uint32_t minimum_schedulable_ticks =
+    uint32_t(block.event_count) * uint32_t(cfg::MIN_EVENT_INTERVAL_TICKS);
+  if (total_ticks < minimum_schedulable_ticks) {
+    if (!final_segment) return false;
+    total_ticks = minimum_schedulable_ticks;
+  }
+
   const uint32_t base = total_ticks / block.event_count;
   if (base < cfg::MIN_EVENT_INTERVAL_TICKS || base > cfg::MAX_EVENT_INTERVAL_TICKS) return false;
   block.interval_base_ticks = uint16_t(base);
@@ -384,6 +420,13 @@ void MotionController::service() {
   if (!stream_active_ && !planner_.empty()) {
     if (planner_.full() || streamClosed()) stream_active_ = true;
   }
+
+  // If Timer1 stopped because the motor queue ran dry while trajectory work is
+  // still pending, drop back to PREFILL state. The previous implementation kept
+  // motion_started_=true and kicked as soon as ONE block arrived, producing a
+  // repeated stop -> one block -> stop cascade.
+  if (motion_started_ && stream_active_ && !stepper_.motionBusy())
+    motion_started_ = false;
 
   // Adaptive bounded producer. Normally generate one segment per pass for
   // ingress fairness. If the motor reservoir falls below LOW_WATER, refill

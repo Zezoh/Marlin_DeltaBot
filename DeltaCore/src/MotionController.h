@@ -103,7 +103,7 @@ private:
   bool streamClosed() const;
   bool canCommitNextMove() const;
   bool initGeneratingMove(const PathMove &move);
-  float adaptiveSegmentDuration(const PathMove &move, float time_s) const;
+  float adaptiveSegmentDuration(const PathMove &move, float time_s, JerkSample &endpoint_sample) const;
   bool validatePath(const float start[3], const float target[3]) const;
   bool towerWithinHome(const int32_t tower_steps[3]) const;
   void finishHome();

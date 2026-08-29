@@ -36,7 +36,7 @@ float JerkProfile::maxReachableSpeed(const float v0, const float distance_mm,
   if (distance_mm <= 0.0f || speed_cap <= v0) return v0;
   if (transitionDistance(v0, speed_cap, max_accel, max_jerk) <= distance_mm) return speed_cap;
   float lo = v0, hi = speed_cap;
-  for (uint8_t i = 0; i < 28; ++i) {
+  for (uint8_t i = 0; i < 16; ++i) {
     const float mid = 0.5f * (lo + hi);
     if (transitionDistance(v0, mid, max_accel, max_jerk) <= distance_mm) lo = mid;
     else hi = mid;
@@ -118,7 +118,7 @@ bool JerkProfile::configure(const float length_mm,
     + transitionDistance(peak, exit_speed_mm_s, max_accel_mm_s2, max_jerk_mm_s3);
   if (needed > length_mm) {
     float lo = lower, hi = upper;
-    for (uint8_t i = 0; i < 28; ++i) {
+    for (uint8_t i = 0; i < 16; ++i) {
       const float mid = 0.5f * (lo + hi);
       const float d =
         transitionDistance(entry_speed_mm_s, mid, max_accel_mm_s2, max_jerk_mm_s3)
