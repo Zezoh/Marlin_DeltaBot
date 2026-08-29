@@ -246,8 +246,6 @@ static void processCommand(char *raw_line) {
   if (commandStarts(line, "M105")) { Serial.println(F("ok T:0.0 /0.0 B:0.0 /0.0")); return; }
   if (commandStarts(line, "M110")) { ack(); return; }
   if (commandStarts(line, "G92")) {
-    // Host compatibility only. DeltaCore has no E axis; allow the common
-    // Pronterface startup command G92 E0 without changing Cartesian position.
     if (strchr(line, 'X') || strchr(line, 'Y') || strchr(line, 'Z')) {
       errorAck(F("G92 XYZ unsupported; use G28 for Delta position reference")); return;
     }
