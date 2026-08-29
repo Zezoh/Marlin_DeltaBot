@@ -21,8 +21,11 @@ constexpr float DEFAULT_JERK_MM_S3 = 18000.0f;
 constexpr float MIN_PROFILE_SPEED_MM_S = 2.0f;
 constexpr float JUNCTION_DEVIATION_MM = 0.10f;
 
-// Original Marlin tower limits. DeltaCore applies them in actuator space.
-constexpr float MAX_TOWER_SPEED_MM_S = 280.0f;
+// Mechanical reference from the original machine. DeltaCore deliberately uses
+// a lower actuator speed ceiling because the 16 MHz ATmega2560 must service
+// Timer1, UART and system timing concurrently without runtime deadline repair.
+constexpr float MECHANICAL_MAX_TOWER_SPEED_MM_S = 280.0f;
+constexpr float MAX_TOWER_SPEED_MM_S = 150.0f;
 constexpr float MAX_TOWER_ACCEL_MM_S2 = 6000.0f;
 constexpr float TOWER_CURVATURE_ACCEL_FRACTION = 0.35f;
 constexpr float TOWER_TANGENTIAL_ACCEL_FRACTION = 0.65f;
@@ -59,7 +62,10 @@ constexpr float HOME_MAX_TRAVEL_MM = 300.0f;
 
 constexpr uint32_t TIMER_HZ = 2000000UL;
 constexpr uint16_t STEP_PULSE_TICKS = 6;
-constexpr uint16_t MIN_EVENT_INTERVAL_TICKS = 120;
+// 160 ticks = 80 us = 12.5 kHz maximum shared DDA event rate. At 80 steps/mm
+// this supports 156.25 mm/s theoretical tower rate; the planner ceiling above
+// is 150 mm/s, leaving deterministic quantization/interrupt headroom.
+constexpr uint16_t MIN_EVENT_INTERVAL_TICKS = 160;
 constexpr uint16_t MAX_EVENT_INTERVAL_TICKS = 65000;
 constexpr uint16_t STARTUP_EVENT_TICKS = 200;
 
