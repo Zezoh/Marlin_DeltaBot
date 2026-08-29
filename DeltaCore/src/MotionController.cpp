@@ -1,43 +1,53 @@
 #include "MotionController.h"
 #include "MachineConfig.h"
-#include "PhaseStep3Axis.h"
 
 #include <Arduino.h>
 #include <math.h>
 
 namespace deltacore {
 
-MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper, Kinematics &kinematics, PathPlanner &planner)
+static constexpr uint8_t LOOKAHEAD_RESERVE_MOVES = 4;
+
+MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper,
+                                   Kinematics &kinematics, PathPlanner &planner)
   : queue_(queue), stepper_(stepper), kinematics_(kinematics), planner_(planner),
     homed_(false), home_state_(HOME_IDLE), event_(EVENT_NONE), last_request_error_(REQUEST_OK),
-    current_xyz_{0,0,0}, command_xyz_{0,0,0}, home_motor_steps_{0,0,0}, batch_active_(false), motion_started_(false),
-    generation_complete_(false), flush_requested_(false), phase_anchor_pending_(false), last_enqueue_ms_(0),
-    generating_index_(0), generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_tower_mm_{0,0,0},
-    segment_length_limit_mm_(cfg::MAX_SEGMENT_MM), generated_motor_steps_{0,0,0}, final_motor_steps_{0,0,0},
-    profile_(), acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2), default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S),
-    smoothing_mode_(-1), interval_continuity_valid_(false), generated_interval_tail_q8_(0),
-    pending_{}, pending_head_(0), pending_tail_(0), pending_count_(0), window_exec_count_(0),
-    final_window_(true), carry_entry_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S) {}
+    current_xyz_{0,0,0}, command_xyz_{0,0,0}, generated_xyz_{0,0,0}, home_motor_steps_{0,0,0},
+    stream_active_(false), motion_started_(false), generating_move_(false), flush_requested_(false),
+    last_enqueue_ms_(0), carry_entry_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S),
+    committed_exit_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S),
+    generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_tower_mm_{0,0,0},
+    segment_length_limit_mm_(cfg::MAX_SEGMENT_MM), generated_motor_steps_{0,0,0},
+    final_motor_steps_{0,0,0}, profile_(), acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2),
+    default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S), smoothing_mode_(-1),
+    pending_{}, pending_head_(0), pending_tail_(0), pending_count_(0) {}
 
 void MotionController::begin() {
   homed_ = false;
   home_state_ = HOME_IDLE;
-  batch_active_ = false;
+  stream_active_ = false;
   motion_started_ = false;
-  generation_complete_ = false;
+  generating_move_ = false;
   flush_requested_ = false;
-  phase_anchor_pending_ = false;
   smoothing_mode_ = -1;
-  interval_continuity_valid_ = false;
-  generated_interval_tail_q8_ = 0;
+  carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
+  committed_exit_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
   planner_.clear();
   pending_head_ = pending_tail_ = pending_count_ = 0;
-  window_exec_count_ = 0; final_window_ = true; carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
   event_ = EVENT_NONE;
 }
 
+void MotionController::invalidatePosition() {
+  homed_ = false;
+  planner_.clear();
+  pending_head_ = pending_tail_ = pending_count_ = 0;
+  stream_active_ = false;
+  generating_move_ = false;
+}
+
 bool MotionController::busy() const {
-  return batch_active_ || !planner_.empty() || pending_count_ || home_state_ != HOME_IDLE || stepper_.motionBusy();
+  return stream_active_ || generating_move_ || !planner_.empty() || pending_count_ ||
+         home_state_ != HOME_IDLE || stepper_.motionBusy() || !queue_.empty();
 }
 
 void MotionController::currentPosition(float xyz[3]) const {
@@ -55,14 +65,14 @@ ControllerEvent MotionController::consumeEvent() {
 }
 
 bool MotionController::setAcceleration(const float mm_s2) {
-  if (batch_active_ || !planner_.empty() || home_state_ != HOME_IDLE || stepper_.motionBusy()) return false;
+  if (busy()) return false;
   if (mm_s2 < 50.0f || mm_s2 > cfg::MAX_CARTESIAN_ACCEL_MM_S2) return false;
   acceleration_mm_s2_ = mm_s2;
   return true;
 }
 
 bool MotionController::setSmoothingMode(const int8_t mode) {
-  if (batch_active_ || !planner_.empty() || home_state_ != HOME_IDLE || stepper_.motionBusy()) return false;
+  if (busy()) return false;
   if (mode < -1 || mode > int8_t(cfg::MAX_SMOOTHING_LEVEL)) return false;
   smoothing_mode_ = mode;
   return true;
@@ -73,6 +83,7 @@ RequestResult MotionController::requestHome() {
   if (busy()) return last_request_error_ = REQUEST_BUSY;
   homed_ = false;
   planner_.clear();
+  pending_head_ = pending_tail_ = pending_count_ = 0;
   queue_.clear();
   stepper_.clearHomeResult();
   if (!stepper_.startHomeSeek(false)) return last_request_error_ = REQUEST_BUSY;
@@ -105,32 +116,31 @@ bool MotionController::validatePath(const float start[3], const float target[3])
 bool MotionController::enqueuePending(const float target[3], const float feed_mm_s) {
   if (pending_count_ >= cfg::STREAM_PENDING_SIZE) return false;
   PendingMove &p = pending_[pending_head_];
-  for (uint8_t a=0;a<3;++a) p.target[a]=target[a];
-  p.feed_mm_s=feed_mm_s;
-  pending_head_=uint8_t((pending_head_+1U)%cfg::STREAM_PENDING_SIZE);
+  for (uint8_t a = 0; a < 3; ++a) p.target[a] = target[a];
+  p.feed_mm_s = feed_mm_s;
+  pending_head_ = uint8_t((uint16_t(pending_head_) + 1U) % cfg::STREAM_PENDING_SIZE);
   ++pending_count_;
   return true;
 }
 
 bool MotionController::dequeuePending(PendingMove &move) {
   if (!pending_count_) return false;
-  move=pending_[pending_tail_];
-  pending_tail_=uint8_t((pending_tail_+1U)%cfg::STREAM_PENDING_SIZE);
+  move = pending_[pending_tail_];
+  pending_tail_ = uint8_t((uint16_t(pending_tail_) + 1U) % cfg::STREAM_PENDING_SIZE);
   --pending_count_;
   return true;
 }
 
-void MotionController::fillPlannerFromPending() {
+bool MotionController::fillPlannerFromPending() {
   while (!planner_.full() && pending_count_) {
     PendingMove p;
     if (!dequeuePending(p)) break;
     float start[3];
     if (!planner_.empty()) planner_.latestTarget(start);
-    else for (uint8_t a=0;a<3;++a) start[a]=current_xyz_[a];
-    if (!planner_.enqueue(start,p.target,p.feed_mm_s,acceleration_mm_s2_)) {
-      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
-    }
+    else for (uint8_t a = 0; a < 3; ++a) start[a] = generated_xyz_[a];
+    if (!planner_.enqueue(start, p.target, p.feed_mm_s, acceleration_mm_s2_)) return false;
   }
+  return true;
 }
 
 RequestResult MotionController::requestMove(const float target_xyz[3], float feed_mm_s) {
@@ -140,38 +150,50 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   if (!kinematics_.withinSoftBounds(target_xyz)) return last_request_error_ = REQUEST_OUT_OF_BOUNDS;
 
   float start[3];
-  for (uint8_t a=0;a<3;++a) start[a]=command_xyz_[a];
-  float delta2=0.0f;
-  for (uint8_t a=0;a<3;++a) { const float d=target_xyz[a]-start[a]; delta2+=d*d; }
+  for (uint8_t a = 0; a < 3; ++a) start[a] = command_xyz_[a];
+  float delta2 = 0.0f;
+  for (uint8_t a = 0; a < 3; ++a) {
+    const float d = target_xyz[a] - start[a];
+    delta2 += d * d;
+  }
   if (delta2 < 0.00000025f) return last_request_error_ = REQUEST_OK;
-  if (!validatePath(start,target_xyz)) return last_request_error_ = REQUEST_KINEMATICS;
+  if (!validatePath(start, target_xyz)) return last_request_error_ = REQUEST_KINEMATICS;
 
   if (feed_mm_s < 1.0f) feed_mm_s = 1.0f;
   if (feed_mm_s > cfg::MAX_CARTESIAN_FEED_MM_S) feed_mm_s = cfg::MAX_CARTESIAN_FEED_MM_S;
 
-  bool accepted=false;
-  if (!batch_active_ && !planner_.full() && !pending_count_) {
-    accepted=planner_.enqueue(start,target_xyz,feed_mm_s,acceleration_mm_s2_);
-  } else {
-    accepted=enqueuePending(target_xyz,feed_mm_s);
+  if (!fillPlannerFromPending()) return last_request_error_ = REQUEST_INVALID;
+  if (!enqueuePending(target_xyz, feed_mm_s)) {
+    if (!fillPlannerFromPending() || !enqueuePending(target_xyz, feed_mm_s))
+      return last_request_error_ = REQUEST_QUEUE_FULL;
   }
-  if (!accepted) return last_request_error_ = REQUEST_QUEUE_FULL;
+  if (!fillPlannerFromPending()) return last_request_error_ = REQUEST_INVALID;
 
-  for (uint8_t a=0;a<3;++a) command_xyz_[a]=target_xyz[a];
-  default_feed_mm_s_=feed_mm_s;
-  last_enqueue_ms_=millis();
-  flush_requested_=false;
-  event_=EVENT_NONE;
-  return last_request_error_=REQUEST_OK;
+  for (uint8_t a = 0; a < 3; ++a) command_xyz_[a] = target_xyz[a];
+  default_feed_mm_s_ = feed_mm_s;
+  last_enqueue_ms_ = millis();
+  flush_requested_ = false;
+  event_ = EVENT_NONE;
+  return last_request_error_ = REQUEST_OK;
 }
 
 void MotionController::flushMoves() {
-  if (!planner_.empty() && !batch_active_) flush_requested_ = true;
+  flush_requested_ = true;
 }
 
-bool MotionController::initGeneratingMove(const uint8_t index) {
-  if (index >= planner_.count()) return false;
-  const PathMove &m = planner_.move(index);
+bool MotionController::streamClosed() const {
+  if (flush_requested_) return true;
+  if (!planner_.empty() || pending_count_)
+    return uint32_t(millis() - last_enqueue_ms_) >= cfg::LOOKAHEAD_HOLD_MS;
+  return false;
+}
+
+bool MotionController::canCommitNextMove() const {
+  if (planner_.empty()) return false;
+  return streamClosed() || planner_.count() > LOOKAHEAD_RESERVE_MOVES;
+}
+
+bool MotionController::initGeneratingMove(const PathMove &m) {
   generated_time_s_ = 0.0f;
   generated_distance_mm_ = 0.0f;
 
@@ -191,14 +213,23 @@ bool MotionController::initGeneratingMove(const uint8_t index) {
                             m.nominal_speed_mm_s, m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
 }
 
+bool MotionController::startNextPlannedMove() {
+  if (generating_move_ || !canCommitNextMove()) return false;
+  if (!planner_.plan(carry_entry_speed_mm_s_)) return false;
+  const PathMove &m = planner_.move(0);
+  committed_exit_speed_mm_s_ = m.exit_speed_mm_s;
+  if (!initGeneratingMove(m)) return false;
+  generating_move_ = true;
+  stream_active_ = true;
+  return true;
+}
+
 float MotionController::adaptiveSegmentDuration(const PathMove &, const float time_s) const {
   const float remaining_time = profile_.totalTime() - time_s;
   if (remaining_time <= 0.0f) return 0.0f;
-
   float dt = 1.0f / cfg::TARGET_SEGMENT_HZ;
   if (dt > remaining_time) dt = remaining_time;
   const JerkSample s0 = profile_.sample(time_s);
-
   for (uint8_t split = 0; split < cfg::MAX_SEGMENT_SPLITS; ++split) {
     const JerkSample s1 = profile_.sample(time_s + dt);
     const float ds = s1.distance_mm - s0.distance_mm;
@@ -206,37 +237,20 @@ float MotionController::adaptiveSegmentDuration(const PathMove &, const float ti
     dt *= 0.5f;
     if (dt <= cfg::MIN_SEGMENT_TIME_S) break;
   }
-
   if (dt > remaining_time) dt = remaining_time;
   return dt;
 }
 
-uint8_t MotionController::smoothingLevelForTicks(const uint32_t base_ticks) const {
-  uint8_t level = 0;
-  if (smoothing_mode_ >= 0) level = uint8_t(smoothing_mode_);
-  else {
-    if (base_ticks >= cfg::SMOOTH_L2_INTERVAL_TICKS) level = 2;
-    else if (base_ticks >= cfg::SMOOTH_L1_INTERVAL_TICKS) level = 1;
-    if (level > cfg::AUTO_SMOOTHING_MAX_LEVEL) level = cfg::AUTO_SMOOTHING_MAX_LEVEL;
-  }
-  if (level > cfg::MAX_SMOOTHING_LEVEL) level = cfg::MAX_SMOOTHING_LEVEL;
-  while (level && (base_ticks >> level) < cfg::MIN_EVENT_INTERVAL_TICKS) --level;
-  return level;
-}
-
 bool MotionController::generateOneSegment() {
-  if (generating_index_ >= window_exec_count_) { generation_complete_ = true; return true; }
-  if (queue_.full()) return false;
-  const PathMove &m = planner_.move(generating_index_);
-  if (!profile_.valid()) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+  if (!generating_move_ || planner_.empty() || queue_.full()) return false;
+  const PathMove &m = planner_.move(0);
+  if (!profile_.valid()) return false;
+
   const float remaining_time = profile_.totalTime() - generated_time_s_;
-  if (remaining_time <= 1.0e-7f) {
-    ++generating_index_;
-    if (generating_index_ >= window_exec_count_) { generation_complete_ = true; return true; }
-    return initGeneratingMove(generating_index_);
-  }
+  if (remaining_time <= 1.0e-7f) return false;
   const float dt = adaptiveSegmentDuration(m, generated_time_s_);
-  if (dt <= 0.0f) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+  if (dt <= 0.0f) return false;
+
   float next_time = generated_time_s_ + dt;
   if (next_time > profile_.totalTime()) next_time = profile_.totalTime();
   const float actual_dt = next_time - generated_time_s_;
@@ -246,96 +260,51 @@ bool MotionController::generateOneSegment() {
     m.start[1] + m.unit[1] * js1.distance_mm,
     m.start[2] + m.unit[2] * js1.distance_mm
   };
-  float tower_end[3]; int32_t target_steps[3];
-  if (!kinematics_.cartesianToTower(endpoint, tower_end)) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
-  for (uint8_t a=0;a<3;++a) target_steps[a]=int32_t(lroundf(tower_end[a]*cfg::STEPS_PER_MM));
-  if (!towerWithinHome(target_steps)) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+
+  float tower_end[3];
+  int32_t target_steps[3];
+  if (!kinematics_.cartesianToTower(endpoint, tower_end)) return false;
+  for (uint8_t a = 0; a < 3; ++a)
+    target_steps[a] = int32_t(lroundf(tower_end[a] * cfg::STEPS_PER_MM));
+  if (!towerWithinHome(target_steps)) return false;
 
   MotorBlock block = {};
   uint16_t max_steps = 0;
-  for (uint8_t a=0;a<3;++a) {
+  for (uint8_t a = 0; a < 3; ++a) {
     const int32_t d = target_steps[a] - generated_motor_steps_[a];
     const uint32_t mag = d >= 0 ? uint32_t(d) : uint32_t(-d);
-    if (mag > 65535UL) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+    if (mag > 65535UL) return false;
     block.steps[a] = uint16_t(mag);
     if (block.steps[a] > max_steps) max_steps = block.steps[a];
     if (d >= 0) block.direction_bits |= uint8_t(1U << a);
   }
   block.event_count = max_steps ? max_steps : 1U;
   const uint32_t total_ticks = uint32_t(actual_dt * float(cfg::TIMER_HZ) + 0.5f);
-  if (total_ticks < block.event_count) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+  if (total_ticks < block.event_count) return false;
   const uint32_t base = total_ticks / block.event_count;
-  if (base < cfg::MIN_EVENT_INTERVAL_TICKS || base > cfg::MAX_EVENT_INTERVAL_TICKS) {
-    stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
-  }
+  if (base < cfg::MIN_EVENT_INTERVAL_TICKS || base > cfg::MAX_EVENT_INTERVAL_TICKS) return false;
   block.interval_base_ticks = uint16_t(base);
   block.interval_remainder_ticks = uint16_t(total_ticks % block.event_count);
   if (!queue_.enqueue(block)) return false;
 
   generated_time_s_ = next_time;
   generated_distance_mm_ = js1.distance_mm;
-  for (uint8_t a=0;a<3;++a) {
+  for (uint8_t a = 0; a < 3; ++a) {
     generated_motor_steps_[a] = target_steps[a];
     generated_tower_mm_[a] = tower_end[a];
   }
+
   if (generated_time_s_ >= profile_.totalTime() - 1.0e-7f) {
-    for (uint8_t a=0;a<3;++a)
-      if (generated_motor_steps_[a] != final_motor_steps_[a]) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
-    ++generating_index_;
-    if (generating_index_ >= window_exec_count_) generation_complete_ = true;
-    else if (!initGeneratingMove(generating_index_)) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+    for (uint8_t a = 0; a < 3; ++a)
+      if (generated_motor_steps_[a] != final_motor_steps_[a]) return false;
+
+    for (uint8_t a = 0; a < 3; ++a) generated_xyz_[a] = m.target[a];
+    carry_entry_speed_mm_s_ = committed_exit_speed_mm_s_;
+    if (!planner_.popFront()) return false;
+    generating_move_ = false;
+    if (!fillPlannerFromPending()) return false;
   }
   return true;
-}
-
-bool MotionController::startBatch() {
-  if (planner_.empty() || batch_active_ || !stepper_.idle()) return false;
-  fillPlannerFromPending();
-  final_window_ = (pending_count_ == 0);
-  if (!planner_.plan(cfg::MIN_PROFILE_SPEED_MM_S)) return false;
-  window_exec_count_ = final_window_ ? planner_.count() : uint8_t(planner_.count() - 1U);
-  if (!window_exec_count_) return false;
-  queue_.clear();
-  generating_index_=0; motion_started_=false; generation_complete_=false;
-  carry_entry_speed_mm_s_=cfg::MIN_PROFILE_SPEED_MM_S;
-  if (!initGeneratingMove(0)) return false;
-  batch_active_=true; flush_requested_=false;
-  return true;
-}
-
-bool MotionController::rollWindow() {
-  if (!batch_active_ || !generation_complete_) return false;
-
-  float previous_end[3];
-  const PathMove &last_exec=planner_.move(window_exec_count_-1U);
-  for (uint8_t a=0;a<3;++a) previous_end[a]=last_exec.target[a];
-
-  float carry=cfg::MIN_PROFILE_SPEED_MM_S;
-  bool have_sentinel=!final_window_ && planner_.count()>window_exec_count_;
-  PathMove sentinel;
-  if (have_sentinel) {
-    sentinel=planner_.move(window_exec_count_);
-    carry=sentinel.entry_speed_mm_s;
-  }
-
-  planner_.clear();
-  if (have_sentinel) planner_.seedPrepared(sentinel);
-  while (!planner_.full() && pending_count_) {
-    PendingMove p; if (!dequeuePending(p)) break;
-    float start[3];
-    if (!planner_.empty()) planner_.latestTarget(start);
-    else for (uint8_t a=0;a<3;++a) start[a]=previous_end[a];
-    if (!planner_.enqueue(start,p.target,p.feed_mm_s,acceleration_mm_s2_)) return false;
-  }
-
-  if (planner_.empty()) return false;
-  final_window_=(pending_count_==0);
-  if (!planner_.plan(carry)) return false;
-  window_exec_count_=final_window_?planner_.count():uint8_t(planner_.count()-1U);
-  if (!window_exec_count_) return false;
-  generating_index_=0; generation_complete_=false;
-  carry_entry_speed_mm_s_=carry;
-  return initGeneratingMove(0);
 }
 
 void MotionController::finishHome() {
@@ -347,22 +316,34 @@ void MotionController::finishHome() {
   for (uint8_t axis = 0; axis < 3; ++axis) {
     current_xyz_[axis] = home_xyz[axis];
     command_xyz_[axis] = home_xyz[axis];
+    generated_xyz_[axis] = home_xyz[axis];
     home_motor_steps_[axis] = home_steps[axis];
   }
   stepper_.setMotorPositionSteps(home_steps);
+  carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
   homed_ = true;
   home_state_ = HOME_IDLE;
   event_ = EVENT_HOME_DONE;
 }
 
-void MotionController::failController() {
-  batch_active_ = false;
+void MotionController::finishStream() {
+  for (uint8_t a = 0; a < 3; ++a) current_xyz_[a] = command_xyz_[a];
+  stream_active_ = false;
   motion_started_ = false;
-  generation_complete_ = false;
+  generating_move_ = false;
   flush_requested_ = false;
-  phase_anchor_pending_ = false;
+  carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
+  committed_exit_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
+  event_ = EVENT_MOVE_DONE;
+}
+
+void MotionController::failController() {
+  stream_active_ = false;
+  motion_started_ = false;
+  generating_move_ = false;
+  flush_requested_ = false;
   planner_.clear();
-  pending_head_=pending_tail_=pending_count_=0;
+  pending_head_ = pending_tail_ = pending_count_ = 0;
   queue_.clear();
   home_state_ = HOME_IDLE;
   homed_ = false;
@@ -371,7 +352,7 @@ void MotionController::failController() {
 
 void MotionController::service() {
   if (stepper_.fault() != FAULT_NONE) {
-    if (batch_active_ || home_state_ != HOME_IDLE || !planner_.empty()) failController();
+    if (busy()) failController();
     return;
   }
 
@@ -396,61 +377,65 @@ void MotionController::service() {
     return;
   }
 
-  if (!batch_active_ && !planner_.empty()) {
-    fillPlannerFromPending();
-    const bool quiet = uint32_t(millis() - last_enqueue_ms_) >= cfg::LOOKAHEAD_HOLD_MS;
-    if (flush_requested_ || quiet || planner_.full()) {
-      if (!startBatch()) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return; }
+  if (!fillPlannerFromPending()) {
+    stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
+  }
+
+  if (!stream_active_ && !planner_.empty()) {
+    if (planner_.full() || streamClosed()) stream_active_ = true;
+  }
+
+  if (stream_active_ && !generating_move_ && canCommitNextMove()) {
+    if (!startNextPlannedMove()) {
+      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
     }
   }
 
-  if (!batch_active_) return;
+  // Exactly one expensive Delta segment per pass. This preserves Serial RX
+  // fairness while the 32-block motor queue absorbs execution jitter.
+  if (generating_move_ && queue_.freeSlots() > 1U) {
+    if (!generateOneSegment()) {
+      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
+    }
+  }
 
   if (!motion_started_) {
-    // Produce at most one Delta segment per main-loop pass. The old greedy
-    // refill loop could monopolize the AVR long enough to overflow Serial RX
-    // during dense G-code streaming. A deep MotorQueue provides the reservoir;
-    // main-loop fairness keeps command ingress lossless.
-    if (!generation_complete_ && queue_.count() < cfg::MOTION_START_PREFILL_BLOCKS)
-      generateOneSegment();
-    if (!queue_.empty() && (generation_complete_ || queue_.count() >= cfg::MOTION_START_PREFILL_BLOCKS)) {
+    const bool fully_generated = streamClosed() && !generating_move_ && planner_.empty() && !pending_count_;
+    if (!queue_.empty() && (queue_.count() >= cfg::MOTION_START_PREFILL_BLOCKS || fully_generated)) {
       stepper_.kickMotion();
       motion_started_ = true;
     }
-  }
-  else {
-    if (!generation_complete_ && queue_.freeSlots() > 1U)
-      generateOneSegment();
+  } else {
     stepper_.kickMotion();
   }
 
-  if (generation_complete_ && (!final_window_ || pending_count_)) {
-    if (!rollWindow()) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return; }
-  }
-
-  if (generation_complete_ && final_window_ && !pending_count_ && queue_.empty() && !stepper_.motionBusy()) {
-    if (!planner_.empty()) {
-      const PathMove &last = planner_.move(window_exec_count_ - 1U);
-      for (uint8_t axis = 0; axis < 3; ++axis) current_xyz_[axis] = last.target[axis];
-    }
-    planner_.clear();
-    batch_active_=false; motion_started_=false; generation_complete_=false;
-    window_exec_count_=0; final_window_=true;
-    event_=EVENT_MOVE_DONE;
-  }
+  const bool all_generated = streamClosed() && !generating_move_ && planner_.empty() && !pending_count_;
+  if (stream_active_ && all_generated && queue_.empty() && !stepper_.motionBusy()) finishStream();
 }
 
 void MotionController::emergencyStop() {
   stepper_.emergencyStop(FAULT_ESTOP);
-  queue_.clear(); planner_.clear(); pending_head_=pending_tail_=pending_count_=0; homed_ = false; home_state_ = HOME_IDLE;
-  batch_active_ = false; motion_started_ = false; generation_complete_ = false; flush_requested_ = false;
-  phase_anchor_pending_ = false; event_ = EVENT_FAULT;
+  queue_.clear();
+  planner_.clear();
+  pending_head_ = pending_tail_ = pending_count_ = 0;
+  homed_ = false;
+  home_state_ = HOME_IDLE;
+  stream_active_ = false;
+  motion_started_ = false;
+  generating_move_ = false;
+  flush_requested_ = false;
+  event_ = EVENT_FAULT;
 }
 
 bool MotionController::clearFault() {
-  if (batch_active_ || home_state_ != HOME_IDLE || !planner_.empty() || stepper_.motionBusy()) return false;
+  if (busy()) return false;
   if (!stepper_.clearFault()) return false;
-  event_ = EVENT_NONE; homed_ = false; motion_started_ = false; phase_anchor_pending_ = false; return true;
+  event_ = EVENT_NONE;
+  homed_ = false;
+  stream_active_ = false;
+  motion_started_ = false;
+  generating_move_ = false;
+  return true;
 }
 
 } // namespace deltacore
