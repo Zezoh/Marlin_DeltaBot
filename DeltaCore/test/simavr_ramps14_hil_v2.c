@@ -1,7 +1,7 @@
 /* Strict scenario harness layered on the original RAMPS 1.4 simulator.
-   It reuses the exact ATmega2560/RAMPS/A4988/endstop model but fixes two
-   verification hazards: partial UART PERF lines and scenario contamination
-   after a timeout. */
+   It reuses the exact ATmega2560/RAMPS/A4988/endstop model, rejects partial
+   UART PERF lines, isolates failed scenarios, and sends motion through normal
+   firmware ACK credits instead of an unrealistic unbounded raw UART burst. */
 #define main deltacore_hil_legacy_main
 #include "simavr_ramps14_hil.c"
 #undef main
@@ -27,6 +27,40 @@ static bool wait_complete_perf_v2(Sim *s, size_t from, uint32_t timeout_ms) {
         if (run_one(s) < 0) break;
     }
     return last_complete_perf_from_v2(s, from) != NULL;
+}
+
+static bool send_line_acked_v2(Sim *s, const char *line, uint32_t timeout_ms) {
+    const size_t mark = s->out_len;
+    enqueue_line(s, line);
+    return wait_token_from(s, mark, "ok\n", timeout_ms);
+}
+
+static bool send_gcode_acked_v2(Sim *s, const char *gcode, const char *label) {
+    const char *p = gcode;
+    char line[128];
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        const size_t n = e ? (size_t)(e - p) : strlen(p);
+        if (n >= sizeof(line)) {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "%s HIL input line too long (%zu)", label, n);
+            fail(s, msg);
+            return false;
+        }
+        if (n) {
+            memcpy(line, p, n);
+            line[n] = '\0';
+            if (!send_line_acked_v2(s, line, 3000)) {
+                char msg[180];
+                snprintf(msg, sizeof(msg), "%s timeout waiting ACK for [%s]", label, line);
+                fail(s, msg);
+                return false;
+            }
+        }
+        if (!e) break;
+        p = e + 1;
+    }
+    return true;
 }
 
 static void check_perf_clean_v2(Sim *s, size_t from, int expected_moves,
@@ -56,8 +90,15 @@ static bool run_path_v2(Sim *s, const char *label, const char *gcode, int moves,
                         double x, double y, double z, uint32_t timeout_ms) {
     const size_t mark = s->out_len;
     const int failures_before = s->failures;
-    enqueue_line(s, "M972");
-    enqueue_raw(s, gcode);
+
+    if (!send_line_acked_v2(s, "M972", 3000)) {
+        fail(s, "M972 ACK timeout");
+        return false;
+    }
+    if (!send_gcode_acked_v2(s, gcode, label)) return false;
+
+    /* M400 intentionally has no immediate ACK while motion is active. Send it
+       after all ACK-credited G-code, then allow M971 to queue behind the barrier. */
     enqueue_line(s, "M400");
     enqueue_line(s, "M971");
 
@@ -108,7 +149,7 @@ int main(int argc, char **argv) {
     }
 
     size_t mark = s.out_len;
-    enqueue_line(&s, "M111 S2");
+    if (!send_line_acked_v2(&s, "M111 S2", 1500)) fail(&s, "M111 ACK timeout");
     enqueue_line(&s, "G28");
     if (!wait_token_from(&s, mark, "echo:HOME_DONE", 5000)) {
         fail(&s, "homing timeout");
@@ -126,8 +167,8 @@ int main(int argc, char **argv) {
                      "G1 X40 Y0 Z120 F4800\n", 1, 40, 0, 120, 6000)) goto done;
     if (!run_path_v2(&s, "45-move-real-regression",
                      PATH45, 45, 0, 0, 120, 15000)) goto done;
-    /* First line only changes modal feed at the already-current XYZ, so the
-       firmware correctly counts 52 physical moves, not 53 G1 records. */
+    /* First line only changes modal feed at the already-current XYZ. The
+       intended PERF count is physical moves, so it is not counted. */
     if (!run_path_v2(&s, "short-segment-torture",
                      SHORT, 52, 0, 0, 120, 15000)) goto done;
 
@@ -135,13 +176,16 @@ int main(int argc, char **argv) {
         const char *rev =
           "G1 X0 Y0 Z120 F10800\nG1 X30 Y0\nG1 X-30 Y0\nG1 X30 Y0\nG1 X-30 Y0\nG1 X0 Y0\n"
           "G1 X0 Y30\nG1 X0 Y-30\nG1 X0 Y30\nG1 X0 Y-30\nG1 X0 Y0\n";
-        /* Same modal-feed-only first G1: 10 physical moves. */
         if (!run_path_v2(&s, "reversal-F10800",
                          rev, 10, 0, 0, 120, 30000)) goto done;
     }
 
 done:
     check_electrical(&s);
+    fprintf(stderr,
+            "HIL UART xon=%d xon_events=%u xoff_events=%u tx_pos=%zu tx_len=%zu pending=%zu\n",
+            s.uart_xon ? 1 : 0, s.uart_xon_events, s.uart_xoff_events,
+            s.tx_pos, s.tx_len, uart_pending_bytes(&s));
     if (s.failures) {
         fprintf(stderr, "\n===== UART TAIL =====\n");
         size_t from = s.out_len > 12000 ? s.out_len - 12000 : 0;
