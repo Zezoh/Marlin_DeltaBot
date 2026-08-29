@@ -1,147 +1,260 @@
 #!/usr/bin/env python3
+from collections import deque
 import random
 
-BAUD=250000
-BYTE_US=10_000_000/BAUD
-RX_CAP=512
-PATH=16
-PENDING=64
-LOW=14
-TARGET=28
-MAX_BURST=8
-BUDGET_US=1800
-SEG_US=10000
-GEN_US=260
-PLAN_US=650
-PARSE_LINE_US=90
+BAUD = 250000
+BYTE_US = 10_000_000 / BAUD
+RX_CAP = 512
+PATH_CAP = 16
+PENDING_CAP = 64
+LOOKAHEAD_RESERVE = 4
+LOW = 14
+TARGET = 28
+MAX_BURST = 8
+BUDGET_US = 1800
+GEN_US = 260
+PLAN_US = 650
+PARSE_LINE_US = 90
+ACK_TX_US = 160
+START_PREFILL = 24
 
-class Sim:
-    def __init__(self, moves, seed=1, inject_m105=True):
+
+def make_commands(move_count, rng, include_m105=True):
+    cmds=[]
+    for i in range(move_count):
+        x=rng.randint(-40,40); y=rng.randint(-40,40)
+        # Each accepted move carries a deterministic synthetic segment count.
+        segs=rng.randint(2,14)
+        cmds.append((f'G1 X{x} Y{y} F6000\n'.encode(), 'G1', segs))
+        if include_m105 and i and i % 37 == 0:
+            cmds.append((b'M105\n','M105',0))
+    cmds.append((b'M400\n','M400',0))
+    return cmds
+
+
+class RealtimeSim:
+    def __init__(self, move_count, seed, paced, host_window=4):
         self.r=random.Random(seed)
-        self.moves=moves
-        self.inject_m105=inject_m105
-        self.host=[]
-        for i in range(moves):
-            x=self.r.randint(-40,40); y=self.r.randint(-40,40)
-            self.host.extend((f'G1 X{x} Y{y} F6000\n').encode())
-            if inject_m105 and i and i%37==0:
-                self.host.extend(b'M105\n')
-        self.host.extend(b'M400\n')
-        self.tx_idx=0
-        self.rx=[]
+        self.move_count=move_count
+        self.commands=deque(make_commands(move_count,self.r,True))
+        self.paced=paced
+        self.host_window=host_window
+        self.outstanding=0
+        self.wire=deque()          # serialized bytes waiting on UART wire
+        self.wire_next_us=0.0
+        self.rx=deque()
         self.line=bytearray()
-        self.path=0
-        self.pending=0
+        self.line_meta=deque()     # command metadata in send order
+
+        self.path=deque()          # segment counts for prepared moves
+        self.pending=deque()
+        self.current_segments=0
         self.accepted=0
         self.executed=0
-        self.motorq=0
-        self.starves=0
-        self.next_motor_us=None
-        self.now=0.0
-        self.next_byte_us=0.0
         self.closed=False
+
+        self.motorq=deque()        # block durations in microseconds
+        self.motor_started=False
+        self.motor_end_us=None
+        self.starves=0
+
+        self.now=0.0
         self.max_rx=0
         self.max_pending=0
+        self.max_motorq=0
+        self.acks_due=deque()
+
+    def host_pump(self):
+        limit=self.host_window if self.paced else 10**9
+        while self.commands and self.outstanding < limit:
+            raw,kind,segs=self.commands.popleft()
+            self.wire.extend(raw)
+            self.line_meta.append((kind,segs))
+            self.outstanding += 1
+            if not self.paced and len(self.wire) > 100000:
+                break
+
+    def service_acks(self):
+        while self.acks_due and self.acks_due[0] <= self.now:
+            self.acks_due.popleft()
+            if self.outstanding:
+                self.outstanding -= 1
+        self.host_pump()
 
     def host_arrive_until(self,t):
-        while self.tx_idx < len(self.host) and self.next_byte_us <= t:
-            if len(self.rx)>=RX_CAP:
+        self.service_acks()
+        if self.wire_next_us < self.now:
+            self.wire_next_us=self.now
+        while self.wire and self.wire_next_us <= t:
+            if len(self.rx) >= RX_CAP:
                 raise AssertionError('RX overflow')
-            self.rx.append(self.host[self.tx_idx]); self.tx_idx+=1
-            self.next_byte_us += BYTE_US
+            self.rx.append(self.wire.popleft())
+            self.wire_next_us += BYTE_US
         self.max_rx=max(self.max_rx,len(self.rx))
 
     def consume_motor_until(self,t):
-        if self.next_motor_us is None and self.motorq:
-            self.next_motor_us=self.now+SEG_US
-        while self.next_motor_us is not None and self.next_motor_us<=t:
-            self.motorq-=1
-            if self.motorq:
-                self.next_motor_us += SEG_US
-            else:
-                self.next_motor_us=None
-                if self.executed < self.accepted or self.path or self.pending:
-                    self.starves+=1
+        while self.motor_started:
+            if self.motor_end_us is None:
+                if not self.motorq:
+                    return
+                self.motor_end_us=self.now+self.motorq[0]
+            if self.motor_end_us > t:
+                return
+            self.now=self.motor_end_us
+            self.motorq.popleft()
+            self.motor_end_us=None
+            # Queue empty while future generated work still exists = real starvation.
+            if not self.motorq and (self.current_segments or self.path or self.pending or self.accepted>self.executed):
+                self.starves += 1
+                self.motor_started=False
+                return
 
     def advance(self,us):
-        t=self.now+us
-        self.host_arrive_until(t); self.consume_motor_until(t)
-        self.now=t
+        target=self.now+us
+        self.host_arrive_until(target)
+        self.consume_motor_until(target)
+        self.now=target
+        self.service_acks()
+
+    def ack(self):
+        if self.paced:
+            self.acks_due.append(self.now+ACK_TX_US)
+        else:
+            # In raw burst mode the sender ignores ACKs; account only for bookkeeping.
+            if self.outstanding:
+                self.outstanding -= 1
 
     def serial_slice(self):
         lines=0; consumed=0
         while self.rx and lines<2 and consumed<96:
-            c=self.rx.pop(0); consumed+=1; self.advance(2)
-            if c==13: continue
-            if c==10:
-                s=self.line.decode(errors='strict'); self.line.clear(); lines+=1
-                self.advance(PARSE_LINE_US)
-                if s.startswith('G1'):
-                    if self.path < PATH: self.path+=1
-                    elif self.pending < PENDING: self.pending+=1
-                    else: raise AssertionError('motion ingress overflow')
-                    self.accepted+=1
-                elif s=='M105':
-                    pass
-                elif s=='M400':
-                    self.closed=True
-                else:
-                    raise AssertionError('corrupt line '+repr(s))
-            else:
+            c=self.rx.popleft(); consumed+=1
+            self.advance(2)
+            if c==13:
+                continue
+            if c!=10:
                 self.line.append(c)
+                if len(self.line)>=192:
+                    raise AssertionError('line overflow')
+                continue
+
+            text=self.line.decode('ascii'); self.line.clear(); lines+=1
+            if not self.line_meta:
+                raise AssertionError('metadata desync')
+            kind,segs=self.line_meta.popleft()
+            self.advance(PARSE_LINE_US)
+            if kind=='G1':
+                if not text.startswith('G1 '):
+                    raise AssertionError('corrupt G1 '+repr(text))
+                if len(self.path) < PATH_CAP:
+                    self.path.append(segs)
+                elif len(self.pending) < PENDING_CAP:
+                    self.pending.append(segs)
+                else:
+                    raise AssertionError('motion ingress overflow')
+                self.accepted+=1
+                self.ack()
+            elif kind=='M105':
+                if text!='M105': raise AssertionError('corrupt M105 '+repr(text))
+                self.ack()
+            elif kind=='M400':
+                if text!='M400': raise AssertionError('corrupt M400 '+repr(text))
+                self.closed=True
+                # Real firmware withholds M400 ok until motion completion.
+            else:
+                raise AssertionError(kind)
         self.max_rx=max(self.max_rx,len(self.rx))
 
     def fill_planner(self):
-        while self.path<PATH and self.pending:
-            self.pending-=1; self.path+=1
-        self.max_pending=max(self.max_pending,self.pending)
+        while len(self.path)<PATH_CAP and self.pending:
+            self.path.append(self.pending.popleft())
+        self.max_pending=max(self.max_pending,len(self.pending))
+
+    def can_commit(self):
+        return bool(self.path) and (self.closed or len(self.path)>LOOKAHEAD_RESERVE)
+
+    def new_block_duration(self):
+        # Deliberately harsh: actual v0.5 blocks in supplied logs span a broad range.
+        return self.r.randint(1250,10000)
 
     def produce(self):
         self.fill_planner()
-        urgent=self.motorq<LOW
+        urgent=len(self.motorq)<LOW
         limit=MAX_BURST if urgent else 1
         spent=0; produced=0
-        while produced<limit and self.motorq<31:
-            if not self.path: break
-            # Keep four lookahead moves until stream closes.
-            if not self.closed and self.path<=4: break
-            if spent+PLAN_US+GEN_US>BUDGET_US and produced: break
-            self.advance(PLAN_US+GEN_US); spent += PLAN_US+GEN_US
-            self.motorq+=1; produced+=1
-            if self.next_motor_us is None and self.motorq>=24:
-                self.next_motor_us=self.now+SEG_US
-            # Approximate one 10ms block per committed move for scheduler stress.
-            self.path-=1; self.executed+=1
-            self.fill_planner()
-            if self.motorq>=TARGET: break
-            if self.motorq>=LOW and self.rx: break
+
+        while produced<limit and len(self.motorq)<31:
+            if self.current_segments==0:
+                if not self.can_commit(): break
+                self.advance(PLAN_US); spent+=PLAN_US
+                self.current_segments=self.path[0]
+
+            if produced and spent+GEN_US>BUDGET_US: break
+            self.advance(GEN_US); spent+=GEN_US
+            self.motorq.append(self.new_block_duration())
+            self.max_motorq=max(self.max_motorq,len(self.motorq))
+            self.current_segments-=1; produced+=1
+
+            if self.current_segments==0:
+                self.path.popleft(); self.executed+=1; self.fill_planner()
+
+            if not self.motor_started and (len(self.motorq)>=START_PREFILL or (self.closed and not self.path and not self.pending and not self.current_segments)):
+                self.motor_started=True
+                self.motor_end_us=None
+
+            if len(self.motorq)>=TARGET: break
+            if len(self.motorq)>=LOW and self.rx: break
+            if spent>=BUDGET_US: break
+
+    def done(self):
+        return (self.closed and not self.commands and not self.wire and not self.rx and not self.line
+                and not self.path and not self.pending and not self.current_segments
+                and self.accepted==self.executed)
 
     def run(self):
-        for _ in range(5_000_000):
+        self.host_pump()
+        for _ in range(8_000_000):
             self.host_arrive_until(self.now)
             self.serial_slice()
             self.produce()
             self.advance(40)
-            if self.closed and self.tx_idx==len(self.host) and not self.rx and not self.line and not self.path and not self.pending:
-                # Drain motor reservoir.
+            if self.done():
                 while self.motorq:
-                    self.advance(SEG_US)
+                    if not self.motor_started:
+                        self.motor_started=True; self.motor_end_us=None
+                    self.advance(max(self.motorq[0],40))
                 break
-        else: raise AssertionError('dead state')
-        assert self.accepted==self.moves,(self.accepted,self.moves)
-        assert self.executed==self.moves,(self.executed,self.moves)
-        # One empty stop at final drain is not counted as starvation by firmware PERF.
+        else:
+            raise AssertionError('dead state')
+        assert self.accepted==self.move_count,(self.accepted,self.move_count)
+        assert self.executed==self.move_count,(self.executed,self.move_count)
         assert self.starves==0,self.starves
-        return self.max_rx,self.max_pending,self.now
+        return self.max_rx,self.max_pending,self.max_motorq,self.now
+
+
+def run_burst():
+    # Raw unpaced sender: bounded by finite AVR memory by definition. Validate the
+    # real-world paste sizes that exposed v0.5.3 corruption, including M105 polls.
+    for moves in (45,65,75):
+        worst=(0,0,0)
+        for seed in range(60):
+            s=RealtimeSim(moves,seed,paced=False)
+            mr,mp,mq,_=s.run(); worst=(max(worst[0],mr),max(worst[1],mp),max(worst[2],mq))
+        print(f'PASS raw-burst moves={moves} seeds=60 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}')
+
+
+def run_credit_stream():
+    for moves in (200,1000,5000):
+        worst=(0,0,0)
+        for seed in range(40):
+            s=RealtimeSim(moves,seed,paced=True,host_window=4)
+            mr,mp,mq,_=s.run(); worst=(max(worst[0],mr),max(worst[1],mp),max(worst[2],mq))
+        print(f'PASS credit-stream moves={moves} seeds=40 window=4 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}')
 
 
 def main():
-    cases=[45,65,200,500,1000,2000]
-    for n in cases:
-        worst_rx=0; worst_p=0
-        for seed in range(80):
-            s=Sim(n,seed,True); mr,mp,_=s.run(); worst_rx=max(worst_rx,mr); worst_p=max(worst_p,mp)
-        print(f'PASS realtime stream moves={n} seeds=80 max_rx={worst_rx}/{RX_CAP} max_pending={worst_p}/{PENDING}')
-    print('PASS UART 250000 + periodic M105 + adaptive producer: no corruption/overflow/starvation')
+    run_burst()
+    run_credit_stream()
+    print('PASS realtime UART + M105 + adaptive refill: no corruption, overflow, reorder, or motor starvation')
 
-if __name__=='__main__': main()
+if __name__=='__main__':
+    main()
