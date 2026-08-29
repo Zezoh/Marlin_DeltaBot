@@ -6,6 +6,22 @@
 #include "simavr_ramps14_hil.c"
 #undef main
 
+typedef struct {
+    uint64_t rises[AXES];
+    uint64_t pos_steps[AXES];
+    uint64_t neg_steps[AXES];
+    int64_t pos[AXES];
+} MotorSnapshot;
+
+static void snapshot_motors_v2(Sim *s, MotorSnapshot *m) {
+    for (int a = 0; a < AXES; ++a) {
+        m->rises[a] = s->motor[a].rises;
+        m->pos_steps[a] = s->motor[a].pos_steps;
+        m->neg_steps[a] = s->motor[a].neg_steps;
+        m->pos[a] = s->motor[a].pos;
+    }
+}
+
 static const char *last_complete_perf_from_v2(Sim *s, size_t from) {
     const char *p = s->out + from;
     const char *last = NULL;
@@ -76,6 +92,37 @@ static bool send_gcode_acked_v2(Sim *s, const char *gcode, const char *label) {
     return true;
 }
 
+static bool parse_perf_steps_v2(const char *perf, uint64_t steps[AXES]) {
+    if (!perf) return false;
+    const char *p = strstr(perf, "steps=");
+    if (!p) return false;
+    unsigned long a = 0, b = 0, c = 0;
+    if (sscanf(p, "steps=%lu/%lu/%lu", &a, &b, &c) != 3) return false;
+    steps[0] = a; steps[1] = b; steps[2] = c;
+    return true;
+}
+
+static void report_motor_delta_v2(Sim *s, const MotorSnapshot *before,
+                                  const char *perf, const char *label) {
+    uint64_t fw_steps[AXES] = {0,0,0};
+    const bool have_fw = parse_perf_steps_v2(perf, fw_steps);
+    for (int a = 0; a < AXES; ++a) {
+        const uint64_t rises = s->motor[a].rises - before->rises[a];
+        const uint64_t pos_steps = s->motor[a].pos_steps - before->pos_steps[a];
+        const uint64_t neg_steps = s->motor[a].neg_steps - before->neg_steps[a];
+        const int64_t net = s->motor[a].pos - before->pos[a];
+        fprintf(stderr,
+                "HIL %s AXIS %c physical rises=%llu pos=%llu neg=%llu net=%lld fw_steps=%s%llu\n",
+                label, 'A' + a,
+                (unsigned long long)rises,
+                (unsigned long long)pos_steps,
+                (unsigned long long)neg_steps,
+                (long long)net,
+                have_fw ? "" : "n/a:",
+                (unsigned long long)(have_fw ? fw_steps[a] : 0ULL));
+    }
+}
+
 static void check_perf_clean_v2(Sim *s, size_t from, int expected_moves,
                                 const char *label) {
     const char *p = last_complete_perf_from_v2(s, from);
@@ -108,10 +155,11 @@ static bool run_path_v2(Sim *s, const char *label, const char *gcode, int moves,
         fail(s, "M972 ACK timeout");
         return false;
     }
+    MotorSnapshot before;
+    snapshot_motors_v2(s, &before);
+
     if (!send_gcode_acked_v2(s, gcode, label)) return false;
 
-    /* M400 intentionally has no immediate ACK while motion is active. Send it
-       after all ACK-credited G-code, then allow M971 to queue behind the barrier. */
     enqueue_line(s, "M400");
     enqueue_line(s, "M971");
 
@@ -122,9 +170,6 @@ static bool run_path_v2(Sim *s, const char *label, const char *gcode, int moves,
         return false;
     }
 
-    /* A previous scenario may still have UART bytes draining after 'mark'.
-       Scope PERF/position parsing strictly AFTER this scenario's PATH_DONE so
-       an old complete PERF line can never satisfy the new scenario. */
     const char *path_done = strstr(s->out + mark, "echo:PATH_DONE");
     if (!path_done) { fail(s, "PATH_DONE vanished from UART buffer"); return false; }
     const size_t result_from = (size_t)(path_done - s->out);
@@ -135,12 +180,13 @@ static bool run_path_v2(Sim *s, const char *label, const char *gcode, int moves,
         return false;
     }
 
+    const char *perf = last_complete_perf_from_v2(s, result_from);
+    report_motor_delta_v2(s, &before, perf, label);
     check_no_errors(s, mark, label);
     check_target(s, x, y, z, label);
     check_perf_clean_v2(s, result_from, moves, label);
     if (s->failures != failures_before) {
         const char *pos = last_complete_position_from_v2(s, result_from);
-        const char *perf = last_complete_perf_from_v2(s, result_from);
         if (pos) {
             const char *e = strchr(pos, '\n');
             fprintf(stderr, "HIL %s INTERNAL %.*s\n", label,
@@ -154,7 +200,6 @@ static bool run_path_v2(Sim *s, const char *label, const char *gcode, int moves,
         return false;
     }
 
-    const char *perf = last_complete_perf_from_v2(s, result_from);
     const char *e = perf ? strchr(perf, '\n') : NULL;
     printf("PASS HIL %s cycles=%llu PERF=%.*s\n", label,
            (unsigned long long)s->avr->cycle,
