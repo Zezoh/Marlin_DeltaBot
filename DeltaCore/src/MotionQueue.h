@@ -5,22 +5,12 @@
 
 namespace deltacore {
 
-enum MotorBlockFlags : uint8_t {
-  BLOCK_FLAG_NONE = 0,
-  BLOCK_FLAG_PHASE_ANCHOR = 1U << 0
-};
-
 struct MotorBlock {
-  // The first block anchors from StepperEngine::phase_anchor_q15_. Every later
-  // block starts from the exact internal phase where the previous block ended,
-  // so phase_start does not need to be duplicated in all 32 queue entries.
-  int32_t phase_end_q15[3];
-  int32_t phase_inc_q15[3];
-  uint32_t virtual_events;
+  uint16_t steps[3];
+  uint16_t event_count;
+  uint16_t interval_base_ticks;
+  uint16_t interval_remainder_ticks;
   uint8_t direction_bits;
-  uint8_t flags;
-  uint16_t interval_start_ticks;
-  int32_t interval_delta_q8;
 };
 
 class MotionQueue {
