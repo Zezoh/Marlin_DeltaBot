@@ -357,9 +357,9 @@ static void processCommand(char *raw_line, bool count_rx = true) {
     Serial.println(F("echo:runtime motion defaults restored")); ack(); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.5.1 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
+    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.5.2 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
     Serial.print(bootSessionId());
-    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+FAST_DELTA_GEN+INTEGER_DDA+EXACT_SEGMENT_TIME+ROLLING_LOOKAHEAD DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
+    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+FAST_DELTA_GEN+INTEGER_DDA+EXACT_SEGMENT_TIME+ROLLING_LOOKAHEAD+SERIAL_FAIR DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
     ack(); return;
   }
 
@@ -417,7 +417,9 @@ static void processCommand(char *raw_line, bool count_rx = true) {
       Serial.print(F(" moving=")); Serial.println(motion.moving() ? 1 : 0); ack(); return;
     }
     beginPathTracking(); ++path_move_count;
-    Serial.print(F("echo:queued path=")); Serial.println(motion.queuedMoves()); ack(); return;
+    // Keep streaming replies compact. Verbose per-move echo can fill TX and
+    // indirectly increase host burst pressure; ACK is sufficient here.
+    ack(); return;
   }
 
   ++unknown_commands; ++command_errors;
@@ -491,7 +493,7 @@ void setup() {
   motion.begin();
 
   Serial.println();
-  Serial.println(F("DeltaCore 0.5.1 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.5.2 - Mega2560 / MKS MINI v2.0"));
   printResetCause();
   Serial.println(F("Motion: rolling jerk-limited look-ahead + curvature-bounded Delta segments"));
   Serial.println(F("Stepper: deterministic integer A/B/C DDA + exact segment tick budget"));

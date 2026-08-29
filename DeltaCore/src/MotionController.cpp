@@ -407,19 +407,20 @@ void MotionController::service() {
   if (!batch_active_) return;
 
   if (!motion_started_) {
-    while (!generation_complete_ && queue_.count() < cfg::MOTION_START_PREFILL_BLOCKS) {
-      if (!generateOneSegment()) break;
-    }
+    // Produce at most one Delta segment per main-loop pass. The old greedy
+    // refill loop could monopolize the AVR long enough to overflow Serial RX
+    // during dense G-code streaming. A deep MotorQueue provides the reservoir;
+    // main-loop fairness keeps command ingress lossless.
+    if (!generation_complete_ && queue_.count() < cfg::MOTION_START_PREFILL_BLOCKS)
+      generateOneSegment();
     if (!queue_.empty() && (generation_complete_ || queue_.count() >= cfg::MOTION_START_PREFILL_BLOCKS)) {
       stepper_.kickMotion();
       motion_started_ = true;
     }
   }
   else {
-    while (!generation_complete_ && queue_.freeSlots() > 1U) {
-      if (!generateOneSegment()) break;
-      stepper_.kickMotion();
-    }
+    if (!generation_complete_ && queue_.freeSlots() > 1U)
+      generateOneSegment();
     stepper_.kickMotion();
   }
 
