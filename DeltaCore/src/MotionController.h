@@ -89,6 +89,8 @@ private:
   float acceleration_mm_s2_;
   float default_feed_mm_s_;
   int8_t smoothing_mode_;
+  bool interval_continuity_valid_;
+  int32_t generated_interval_tail_q8_;
 
   bool startBatch();
   bool initGeneratingMove(uint8_t index);

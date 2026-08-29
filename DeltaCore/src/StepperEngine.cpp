@@ -343,20 +343,6 @@ void StepperEngine::motionISR() {
 
   if (!phase_.active()) {
     block_active_ = false;
-
-    // Boundary-first scheduling: reserve the next compare deadline before
-    // phase/block handoff work. Previously we loaded and validated the next
-    // block first, so short intervals were already late and the guard stretched
-    // the trajectory. The published prefetch normally provides this deadline;
-    // the ring fallback remains available inside loadNextMotionBlock().
-    uint16_t boundary_ticks = 0;
-    if (prefetch_valid_) boundary_ticks = prefetch_block_->interval_start_ticks;
-    else if (queue_ && !queue_->empty()) {
-      servicePrefetch();
-      if (prefetch_valid_) boundary_ticks = prefetch_block_->interval_start_ticks;
-    }
-    if (boundary_ticks) scheduleMotionInterval(boundary_ticks);
-
     if (loadNextMotionBlock()) {
       if (active_pulse_axes_) {
         pending_direction_bits_ = currentBlock().direction_bits;
@@ -366,9 +352,7 @@ void StepperEngine::motionISR() {
         applyDirectionBits(currentBlock().direction_bits);
         direction_pending_ = false;
       }
-      // Do not reschedule here: the deadline was already reserved above.
-      // If no published deadline was available, fall back to the loaded block.
-      if (!boundary_ticks) scheduleMotionInterval(currentMotionInterval());
+      scheduleMotionInterval(currentMotionInterval());
     }
     else if (fault_ == FAULT_NONE) {
       ++queue_empty_stops_; mode_ = MODE_IDLE; stopTimerFromISR();

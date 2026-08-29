@@ -193,6 +193,6 @@ int main() {
   testPlanner();
   testKinematicsMetrics();
   testFastGeneratorChordBound();
-  printf("PASS v0.4.6 fast generator + compact phase continuation + conservative Delta chord bound\n");
+  printf("PASS v0.4.7 fast generator + compact phase continuation + conservative Delta chord bound\n");
   return 0;
 }
