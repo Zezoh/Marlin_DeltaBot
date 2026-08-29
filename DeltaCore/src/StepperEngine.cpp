@@ -12,18 +12,18 @@ StepperEngine *StepperEngine::instance_ = nullptr;
 
 StepperEngine::StepperEngine()
   : queue_(nullptr), phase_(), block_a_{}, block_b_{}, active_block_(&block_a_),
-    prefetch_block_(&block_b_), prefetch_valid_(false), mode_(MODE_IDLE),
-    block_active_(false), motors_enabled_(false), fault_(FAULT_NONE),
-    motor_position_steps_{0,0,0}, completed_step_events_(0), blocks_loaded_(0),
+    prefetch_block_(&block_b_), prefetch_valid_(false), phase_anchor_q15_{0,0,0},
+    phase_anchor_valid_(false), mode_(MODE_IDLE), block_active_(false), motors_enabled_(false),
+    fault_(FAULT_NONE), motor_position_steps_{0,0,0}, completed_step_events_(0), blocks_loaded_(0),
     queue_empty_stops_(0), timer_guard_hits_(0), real_steps_{0,0,0}, phase_faults_(0),
     min_interval_ticks_(0xFFFFU), max_interval_ticks_(0), max_isr_entry_ticks_(0),
     step_out_{nullptr,nullptr,nullptr}, dir_out_{nullptr,nullptr,nullptr},
     enable_out_{nullptr,nullptr,nullptr}, endstop_in_{nullptr,nullptr,nullptr},
     step_mask_{0,0,0}, dir_mask_{0,0,0}, enable_mask_{0,0,0}, endstop_mask_{0,0,0},
     active_pulse_axes_(0), direction_pending_(false), pending_direction_bits_(0),
-    current_interval_q8_(0), interval_delta_q8_(0),
-    home_kind_(HOME_KIND_NONE), home_result_(HOME_RESULT_NONE), home_active_axes_(0),
-    home_events_done_(0), home_event_limit_(0), home_interval_ticks_(0) {}
+    current_interval_q8_(0), interval_delta_q8_(0), home_kind_(HOME_KIND_NONE),
+    home_result_(HOME_RESULT_NONE), home_active_axes_(0), home_events_done_(0),
+    home_event_limit_(0), home_interval_ticks_(0) {}
 
 void StepperEngine::writeFast(volatile uint8_t *reg, const uint8_t mask, const bool high) {
   if (high) *reg |= mask;
@@ -53,6 +53,7 @@ void StepperEngine::begin(MotionQueue &queue) {
   active_block_ = &block_a_;
   prefetch_block_ = &block_b_;
   prefetch_valid_ = false;
+  phase_anchor_valid_ = false;
   configureFastPins();
   allStepsInactive();
   setEnableFast(false);
@@ -124,6 +125,13 @@ void StepperEngine::setEnableFast(const bool enabled) {
 void StepperEngine::enableMotors() { noInterrupts(); setEnableFast(true); interrupts(); }
 void StepperEngine::disableMotors() { if (!idle()) return; noInterrupts(); setEnableFast(false); interrupts(); }
 
+bool StepperEngine::setPhaseAnchorQ15(const int32_t q15[3]) {
+  if (mode_ != MODE_IDLE || block_active_ || prefetch_valid_) return false;
+  for (uint8_t axis = 0; axis < 3; ++axis) phase_anchor_q15_[axis] = q15[axis];
+  phase_anchor_valid_ = true;
+  return true;
+}
+
 bool StepperEngine::endstopTriggered(const uint8_t axis) const {
   if (axis >= 3) return false;
   const bool raw_high = (*endstop_in_[axis] & endstop_mask_[axis]) != 0;
@@ -161,16 +169,12 @@ void StepperEngine::advanceBlockTiming() { current_interval_q8_ += interval_delt
 void StepperEngine::scheduleMotionInterval(uint16_t desired_ticks) {
   if (desired_ticks < cfg::MIN_EVENT_INTERVAL_TICKS) desired_ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
   if (desired_ticks > cfg::MAX_EVENT_INTERVAL_TICKS) desired_ticks = cfg::MAX_EVENT_INTERVAL_TICKS;
-
   const uint16_t elapsed = TCNT1;
   const uint32_t earliest = uint32_t(elapsed) + cfg::TIMER_ISR_GUARD_TICKS;
   if (uint32_t(desired_ticks) <= earliest) {
-    desired_ticks = earliest > cfg::MAX_EVENT_INTERVAL_TICKS
-      ? cfg::MAX_EVENT_INTERVAL_TICKS
-      : uint16_t(earliest);
+    desired_ticks = earliest > cfg::MAX_EVENT_INTERVAL_TICKS ? cfg::MAX_EVENT_INTERVAL_TICKS : uint16_t(earliest);
     ++timer_guard_hits_;
   }
-
   if (desired_ticks < min_interval_ticks_) min_interval_ticks_ = desired_ticks;
   if (desired_ticks > max_interval_ticks_) max_interval_ticks_ = desired_ticks;
   OCR1A = desired_ticks;
@@ -194,8 +198,18 @@ bool StepperEngine::loadNextMotionBlock() {
   int32_t actual[3];
   for (uint8_t axis = 0; axis < 3; ++axis) actual[axis] = motor_position_steps_[axis];
   const bool anchor = (block.flags & BLOCK_FLAG_PHASE_ANCHOR) != 0;
-  if (!phase_.begin(block.phase_start_q15, block.phase_end_q15,
-                    block.phase_inc_q15, block.virtual_events, anchor, actual)) {
+  bool ok = false;
+  if (anchor) {
+    if (phase_anchor_valid_)
+      ok = phase_.begin(phase_anchor_q15_, block.phase_end_q15, block.phase_inc_q15,
+                        block.virtual_events, true, actual);
+    phase_anchor_valid_ = false;
+  }
+  else {
+    ok = phase_.beginContinuation(block.phase_end_q15, block.phase_inc_q15,
+                                  block.virtual_events, actual);
+  }
+  if (!ok) {
     ++phase_faults_;
     fault_ = FAULT_INTERNAL;
     return false;
@@ -238,7 +252,7 @@ uint16_t StepperEngine::intervalForTowerSpeed(const float mm_s) const {
 
 bool StepperEngine::startHomeSeek(const bool slow) {
   if (!idle() || fault_ != FAULT_NONE) return false;
-  noInterrupts(); queue_->clearUnsafe(); prefetch_valid_ = false; phase_.invalidate(); setEnableFast(true);
+  noInterrupts(); queue_->clearUnsafe(); prefetch_valid_ = false; phase_anchor_valid_ = false; phase_.invalidate(); setEnableFast(true);
   home_kind_ = HOME_KIND_SEEK; home_result_ = HOME_RESULT_RUNNING; home_active_axes_ = 0x07;
   home_events_done_ = 0;
   home_event_limit_ = uint32_t(cfg::HOME_MAX_TRAVEL_MM * cfg::STEPS_PER_MM + 0.5f);
@@ -249,7 +263,7 @@ bool StepperEngine::startHomeSeek(const bool slow) {
 
 bool StepperEngine::startHomeBackoff() {
   if (!idle() || fault_ != FAULT_NONE) return false;
-  noInterrupts(); prefetch_valid_ = false; phase_.invalidate(); setEnableFast(true);
+  noInterrupts(); prefetch_valid_ = false; phase_anchor_valid_ = false; phase_.invalidate(); setEnableFast(true);
   home_kind_ = HOME_KIND_BACKOFF; home_result_ = HOME_RESULT_RUNNING; home_active_axes_ = 0x07;
   home_events_done_ = 0;
   home_event_limit_ = uint32_t(cfg::HOME_BACKOFF_MM * cfg::STEPS_PER_MM + 0.5f);
@@ -293,13 +307,8 @@ void StepperEngine::motionISR() {
 
   const PhaseStepMask sm = phase_.next();
   if (!phase_.valid()) {
-    ++phase_faults_;
-    fault_ = FAULT_INTERNAL;
-    block_active_ = false;
-    mode_ = MODE_IDLE;
-    setEnableFast(false);
-    stopTimerFromISR();
-    return;
+    ++phase_faults_; fault_ = FAULT_INTERNAL; block_active_ = false; mode_ = MODE_IDLE;
+    setEnableFast(false); stopTimerFromISR(); return;
   }
 
   uint8_t pulse = 0;
@@ -308,15 +317,9 @@ void StepperEngine::motionISR() {
     const uint8_t bit = uint8_t(1U << axis);
     if (!(sm.bits & bit)) continue;
     const bool positive = (sm.positive_bits & bit) != 0;
-    const bool configured_positive = (configured_direction & bit) != 0;
-    if (positive != configured_positive) {
-      ++phase_faults_;
-      fault_ = FAULT_INTERNAL;
-      block_active_ = false;
-      mode_ = MODE_IDLE;
-      setEnableFast(false);
-      stopTimerFromISR();
-      return;
+    if (positive != ((configured_direction & bit) != 0)) {
+      ++phase_faults_; fault_ = FAULT_INTERNAL; block_active_ = false; mode_ = MODE_IDLE;
+      setEnableFast(false); stopTimerFromISR(); return;
     }
     writeStep(axis, true); pulse |= bit;
     ++real_steps_[axis];
@@ -328,9 +331,7 @@ void StepperEngine::motionISR() {
   if (pulse) {
     uint16_t pulse_end = uint16_t(TCNT1 + cfg::STEP_PULSE_TICKS);
     if (pulse_end >= OCR1A) pulse_end = uint16_t(OCR1A - 1U);
-    OCR1B = pulse_end;
-    TIFR1 = _BV(OCF1B);
-    TIMSK1 |= _BV(OCIE1B);
+    OCR1B = pulse_end; TIFR1 = _BV(OCF1B); TIMSK1 |= _BV(OCIE1B);
   }
 
   if (!phase_.active()) {
@@ -347,14 +348,10 @@ void StepperEngine::motionISR() {
       scheduleMotionInterval(currentMotionInterval());
     }
     else if (fault_ == FAULT_NONE) {
-      ++queue_empty_stops_;
-      mode_ = MODE_IDLE;
-      stopTimerFromISR();
+      ++queue_empty_stops_; mode_ = MODE_IDLE; stopTimerFromISR();
     }
     else {
-      mode_ = MODE_IDLE;
-      setEnableFast(false);
-      stopTimerFromISR();
+      mode_ = MODE_IDLE; setEnableFast(false); stopTimerFromISR();
     }
   }
   else {
@@ -409,21 +406,20 @@ void StepperEngine::onCompareB() {
 void StepperEngine::emergencyStop(const FaultCode code) {
   noInterrupts(); TIMSK1 = 0; allStepsInactive();
   if (queue_) queue_->clearUnsafe();
-  prefetch_valid_ = false;
-  phase_.invalidate();
+  prefetch_valid_ = false; phase_anchor_valid_ = false; phase_.invalidate();
   block_active_ = false; mode_ = MODE_IDLE; home_kind_ = HOME_KIND_NONE;
   home_result_ = HOME_RESULT_FAILED; fault_ = code; setEnableFast(false); interrupts();
 }
 
 bool StepperEngine::clearFault() {
   if (!idle()) return false;
-  noInterrupts(); fault_ = FAULT_NONE; home_result_ = HOME_RESULT_NONE; prefetch_valid_ = false; phase_.invalidate(); interrupts(); return true;
+  noInterrupts(); fault_ = FAULT_NONE; home_result_ = HOME_RESULT_NONE; prefetch_valid_ = false;
+  phase_anchor_valid_ = false; phase_.invalidate(); interrupts(); return true;
 }
 void StepperEngine::setMotorPositionSteps(const int32_t steps[3]) {
   noInterrupts();
   for (uint8_t axis = 0; axis < 3; ++axis) motor_position_steps_[axis] = steps[axis];
-  phase_.syncOutputSteps(steps);
-  interrupts();
+  phase_.syncOutputSteps(steps); interrupts();
 }
 void StepperEngine::getMotorPositionSteps(int32_t steps[3]) const {
   noInterrupts(); for (uint8_t axis = 0; axis < 3; ++axis) steps[axis] = motor_position_steps_[axis]; interrupts();
