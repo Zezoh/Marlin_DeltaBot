@@ -43,9 +43,19 @@ jobs:
       - name: Build Mega2560 firmware
         run: pio run --project-dir DeltaCore -e megaatmega2560
 
+      - name: Static RAM symbol map
+        run: |
+          $HOME/.platformio/packages/toolchain-atmelavr/bin/avr-nm \
+            -S --size-sort --radix=d \
+            DeltaCore/.pio/build/megaatmega2560/firmware.elf \
+            > DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
+          tail -n 80 DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
+
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560-v0.4.3
-          path: DeltaCore/.pio/build/megaatmega2560/firmware.hex
+          name: DeltaCore-Mega2560-v0.4.4
+          path: |
+            DeltaCore/.pio/build/megaatmega2560/firmware.hex
+            DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
           if-no-files-found: error
