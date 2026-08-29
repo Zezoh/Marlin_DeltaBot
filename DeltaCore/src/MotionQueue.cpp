@@ -5,15 +5,21 @@
 
 namespace deltacore {
 
-MotionQueue::MotionQueue() : head_(0), tail_(0) {}
+MotionQueue::MotionQueue() : head_(0), tail_(0), high_water_(0) {}
 
 bool MotionQueue::enqueue(const MotorBlock &block) {
   const uint8_t head = head_;
+  const uint8_t tail = tail_;
   const uint8_t next = nextIndex(head);
-  if (next == tail_) return false;
+  if (next == tail) return false;
   buffer_[head] = block;
   asm volatile("" ::: "memory");
   head_ = next;
+
+  const uint8_t used = next >= tail
+    ? uint8_t(next - tail)
+    : uint8_t(cfg::MOTION_QUEUE_SIZE - tail + next);
+  if (used > high_water_) high_water_ = used;
   return true;
 }
 
