@@ -1,4 +1,5 @@
 #include "PathPlanner.h"
+#include "JerkProfile.h"
 #include <math.h>
 
 namespace deltacore {
@@ -100,20 +101,26 @@ bool PathPlanner::plan() {
     moves_[i].entry_speed_mm_s = moves_[i].max_entry_speed_mm_s;
   }
 
+  // Reverse pass: a move must be able to decelerate from its entry speed to
+  // the next junction using the configured acceleration AND jerk limits.
   float next_entry = cfg::MIN_PROFILE_SPEED_MM_S;
   for (int16_t i = int16_t(count_) - 1; i >= 0; --i) {
     PathMove &m = moves_[uint8_t(i)];
-    const float max_from_decel = sqrtf(next_entry * next_entry + 2.0f * m.accel_mm_s2 * m.length_mm);
+    const float max_from_decel = JerkProfile::maxReachableSpeed(
+      next_entry, m.length_mm, m.nominal_speed_mm_s, m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
     if (m.entry_speed_mm_s > max_from_decel) m.entry_speed_mm_s = max_from_decel;
     if (m.entry_speed_mm_s > m.nominal_speed_mm_s) m.entry_speed_mm_s = m.nominal_speed_mm_s;
     next_entry = m.entry_speed_mm_s;
   }
 
+  // Forward pass: likewise, each junction speed must actually be reachable
+  // from the previous entry under the same jerk-limited transition model.
   moves_[0].entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S;
   for (uint8_t i = 1; i < count_; ++i) {
     const PathMove &prev = moves_[i - 1];
-    const float reachable = sqrtf(prev.entry_speed_mm_s * prev.entry_speed_mm_s
-                                + 2.0f * prev.accel_mm_s2 * prev.length_mm);
+    const float reachable = JerkProfile::maxReachableSpeed(
+      prev.entry_speed_mm_s, prev.length_mm, prev.nominal_speed_mm_s,
+      prev.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
     if (moves_[i].entry_speed_mm_s > reachable) moves_[i].entry_speed_mm_s = reachable;
   }
 
