@@ -27,6 +27,8 @@ public:
   bool full() const;
   uint8_t count() const;
   uint8_t freeSlots() const;
+  uint8_t highWater() const { return high_water_; }
+  void clearHighWater() { high_water_ = count(); }
   void clear();
   void clearUnsafe();
 
@@ -34,6 +36,7 @@ private:
   MotorBlock buffer_[cfg::MOTION_QUEUE_SIZE];
   volatile uint8_t head_;
   volatile uint8_t tail_;
+  volatile uint8_t high_water_;
   static uint8_t nextIndex(uint8_t i) { ++i; return i >= cfg::MOTION_QUEUE_SIZE ? 0 : i; }
 };
 
