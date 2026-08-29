@@ -73,6 +73,7 @@ private:
   int32_t home_motor_steps_[3];
 
   bool batch_active_;
+  bool motion_started_;
   bool generation_complete_;
   bool flush_requested_;
   bool phase_anchor_pending_;
