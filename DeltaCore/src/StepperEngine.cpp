@@ -11,13 +11,14 @@ namespace deltacore {
 StepperEngine *StepperEngine::instance_ = nullptr;
 
 StepperEngine::StepperEngine()
-  : queue_(nullptr), dda_(), current_block_{{0,0,0},0,0,0}, mode_(MODE_IDLE),
+  : queue_(nullptr), dda_(), current_block_{{0,0,0},0,0,0,0}, mode_(MODE_IDLE),
     block_active_(false), motors_enabled_(false), fault_(FAULT_NONE),
     motor_position_steps_{0,0,0}, completed_step_events_(0),
     step_out_{nullptr,nullptr,nullptr}, dir_out_{nullptr,nullptr,nullptr},
     enable_out_{nullptr,nullptr,nullptr}, endstop_in_{nullptr,nullptr,nullptr},
     step_mask_{0,0,0}, dir_mask_{0,0,0}, enable_mask_{0,0,0}, endstop_mask_{0,0,0},
     active_pulse_axes_(0), direction_pending_(false), pending_direction_bits_(0),
+    current_interval_q8_(0), interval_delta_q8_(0),
     home_kind_(HOME_KIND_NONE), home_result_(HOME_RESULT_NONE), home_active_axes_(0),
     home_events_done_(0), home_event_limit_(0), home_interval_ticks_(0) {}
 
@@ -105,19 +106,26 @@ void StepperEngine::startTimer(const uint16_t first_ticks) {
 }
 void StepperEngine::stopTimerFromISR() { TIMSK1 = 0; allStepsInactive(); }
 
-uint16_t StepperEngine::effectiveInterval(const MotorBlock &block) const {
-  uint8_t level = block.smoothing_level;
-  if (level > cfg::MAX_SMOOTHING_LEVEL) level = cfg::MAX_SMOOTHING_LEVEL;
-  uint32_t ticks = block.interval_ticks;
-  if (level) ticks = (ticks + (uint32_t(1U) << (level - 1U))) >> level;
-  if (ticks < cfg::MIN_EVENT_INTERVAL_TICKS) ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
-  if (ticks > cfg::MAX_EVENT_INTERVAL_TICKS) ticks = cfg::MAX_EVENT_INTERVAL_TICKS;
+void StepperEngine::initBlockTiming(const MotorBlock &block) {
+  current_interval_q8_ = int32_t(block.interval_start_ticks) << 8;
+  interval_delta_q8_ = block.interval_delta_q8;
+}
+
+uint16_t StepperEngine::currentMotionInterval() const {
+  int32_t ticks = (current_interval_q8_ + 128) >> 8;
+  if (ticks < int32_t(cfg::MIN_EVENT_INTERVAL_TICKS)) ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
+  if (ticks > int32_t(cfg::MAX_EVENT_INTERVAL_TICKS)) ticks = cfg::MAX_EVENT_INTERVAL_TICKS;
   return uint16_t(ticks);
+}
+
+void StepperEngine::advanceBlockTiming() {
+  current_interval_q8_ += interval_delta_q8_;
 }
 
 bool StepperEngine::loadNextMotionBlock() {
   if (!queue_ || !queue_->popFromISR(current_block_)) return false;
   if (!dda_.begin(current_block_.steps, current_block_.smoothing_level)) return false;
+  initBlockTiming(current_block_);
   block_active_ = true;
   return true;
 }
@@ -192,7 +200,7 @@ void StepperEngine::motionISR() {
   if (!block_active_) {
     if (!loadNextMotionBlock()) { mode_ = MODE_IDLE; stopTimerFromISR(); return; }
     applyDirectionBits(current_block_.direction_bits);
-    OCR1A = effectiveInterval(current_block_);
+    OCR1A = currentMotionInterval();
     return;
   }
 
@@ -218,23 +226,23 @@ void StepperEngine::motionISR() {
 
   if (!dda_.active()) {
     block_active_ = false;
-    MotorBlock next;
-    if (queue_ && queue_->popFromISR(next) && dda_.begin(next.steps, next.smoothing_level)) {
-      current_block_ = next;
-      block_active_ = true;
+    if (loadNextMotionBlock()) {
       if (active_pulse_axes_) {
-        pending_direction_bits_ = next.direction_bits;
+        pending_direction_bits_ = current_block_.direction_bits;
         direction_pending_ = true;
       }
       else {
-        applyDirectionBits(next.direction_bits);
+        applyDirectionBits(current_block_.direction_bits);
         direction_pending_ = false;
       }
-      OCR1A = effectiveInterval(next);
+      OCR1A = currentMotionInterval();
     }
     else OCR1A = cfg::STARTUP_EVENT_TICKS;
   }
-  else OCR1A = effectiveInterval(current_block_);
+  else {
+    advanceBlockTiming();
+    OCR1A = currentMotionInterval();
+  }
 }
 
 void StepperEngine::finishHomeFromISR(const bool success) {
