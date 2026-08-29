@@ -21,6 +21,17 @@ enum HomeResult : int8_t {
   HOME_RESULT_FAILED = -1
 };
 
+struct StepperStats {
+  uint32_t virtual_events;
+  uint32_t blocks_loaded;
+  uint32_t queue_empty_stops;
+  uint32_t timer_guard_hits;
+  uint32_t real_steps[3];
+  uint16_t min_interval_ticks;
+  uint16_t max_interval_ticks;
+  uint16_t max_isr_entry_ticks;
+};
+
 class StepperEngine {
 public:
   StepperEngine();
@@ -43,6 +54,8 @@ public:
   void setMotorPositionSteps(const int32_t steps[3]);
   void getMotorPositionSteps(int32_t steps[3]) const;
   uint32_t completedStepEvents() const { return completed_step_events_; }
+  void snapshotStats(StepperStats &stats) const;
+  void clearStats();
   void onCompareA();
   void onCompareB();
   static StepperEngine *instance() { return instance_; }
@@ -60,6 +73,13 @@ private:
   volatile uint8_t fault_;
   volatile int32_t motor_position_steps_[3];
   volatile uint32_t completed_step_events_;
+  volatile uint32_t blocks_loaded_;
+  volatile uint32_t queue_empty_stops_;
+  volatile uint32_t timer_guard_hits_;
+  volatile uint32_t real_steps_[3];
+  volatile uint16_t min_interval_ticks_;
+  volatile uint16_t max_interval_ticks_;
+  volatile uint16_t max_isr_entry_ticks_;
   volatile uint8_t *step_out_[3];
   volatile uint8_t *dir_out_[3];
   volatile uint8_t *enable_out_[3];
@@ -92,6 +112,7 @@ private:
   void initBlockTiming(const MotorBlock &block);
   uint16_t currentMotionInterval() const;
   void advanceBlockTiming();
+  void scheduleMotionInterval(uint16_t desired_ticks);
   void motionISR();
   void homeISR();
   void pulseAxes(uint8_t axes, bool positive);
