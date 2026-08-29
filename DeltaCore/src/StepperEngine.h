@@ -19,6 +19,10 @@ public:
   bool motorsEnabled() const { return motors_enabled_; }
   void servicePrefetch();
   void kickMotion();
+  // executionActive() answers only whether Timer1 is executing motion.  It is
+  // intentionally different from motionBusy(), which also includes buffered or
+  // prefetched work. Recovery state machines must use executionActive().
+  bool executionActive() const { return mode_ == MODE_MOTION; }
   bool motionBusy() const;
   bool idle() const;
   bool startHomeSeek(bool slow);
