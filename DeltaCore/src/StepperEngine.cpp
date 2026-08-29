@@ -13,7 +13,9 @@ StepperEngine *StepperEngine::instance_ = nullptr;
 StepperEngine::StepperEngine()
   : queue_(nullptr), dda_(), current_block_{{0,0,0},0,0,0,0}, mode_(MODE_IDLE),
     block_active_(false), motors_enabled_(false), fault_(FAULT_NONE),
-    motor_position_steps_{0,0,0}, completed_step_events_(0),
+    motor_position_steps_{0,0,0}, completed_step_events_(0), blocks_loaded_(0),
+    queue_empty_stops_(0), timer_guard_hits_(0), real_steps_{0,0,0},
+    min_interval_ticks_(0xFFFFU), max_interval_ticks_(0), max_isr_entry_ticks_(0),
     step_out_{nullptr,nullptr,nullptr}, dir_out_{nullptr,nullptr,nullptr},
     enable_out_{nullptr,nullptr,nullptr}, endstop_in_{nullptr,nullptr,nullptr},
     step_mask_{0,0,0}, dir_mask_{0,0,0}, enable_mask_{0,0,0}, endstop_mask_{0,0,0},
@@ -50,6 +52,7 @@ void StepperEngine::begin(MotionQueue &queue) {
   configureFastPins();
   allStepsInactive();
   setEnableFast(false);
+  clearStats();
   noInterrupts();
   TCCR1A = 0;
   TCCR1B = _BV(WGM12) | _BV(CS11);
@@ -58,6 +61,32 @@ void StepperEngine::begin(MotionQueue &queue) {
   OCR1B = cfg::STEP_PULSE_TICKS;
   TIMSK1 = 0;
   TIFR1 = _BV(OCF1A) | _BV(OCF1B);
+  interrupts();
+}
+
+void StepperEngine::snapshotStats(StepperStats &stats) const {
+  noInterrupts();
+  stats.virtual_events = completed_step_events_;
+  stats.blocks_loaded = blocks_loaded_;
+  stats.queue_empty_stops = queue_empty_stops_;
+  stats.timer_guard_hits = timer_guard_hits_;
+  for (uint8_t axis = 0; axis < 3; ++axis) stats.real_steps[axis] = real_steps_[axis];
+  stats.min_interval_ticks = min_interval_ticks_ == 0xFFFFU ? 0 : min_interval_ticks_;
+  stats.max_interval_ticks = max_interval_ticks_;
+  stats.max_isr_entry_ticks = max_isr_entry_ticks_;
+  interrupts();
+}
+
+void StepperEngine::clearStats() {
+  noInterrupts();
+  completed_step_events_ = 0;
+  blocks_loaded_ = 0;
+  queue_empty_stops_ = 0;
+  timer_guard_hits_ = 0;
+  for (uint8_t axis = 0; axis < 3; ++axis) real_steps_[axis] = 0;
+  min_interval_ticks_ = 0xFFFFU;
+  max_interval_ticks_ = 0;
+  max_isr_entry_ticks_ = 0;
   interrupts();
 }
 
@@ -122,10 +151,29 @@ void StepperEngine::advanceBlockTiming() {
   current_interval_q8_ += interval_delta_q8_;
 }
 
+void StepperEngine::scheduleMotionInterval(uint16_t desired_ticks) {
+  if (desired_ticks < cfg::MIN_EVENT_INTERVAL_TICKS) desired_ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
+  if (desired_ticks > cfg::MAX_EVENT_INTERVAL_TICKS) desired_ticks = cfg::MAX_EVENT_INTERVAL_TICKS;
+
+  const uint16_t elapsed = TCNT1;
+  const uint32_t earliest = uint32_t(elapsed) + cfg::TIMER_ISR_GUARD_TICKS;
+  if (uint32_t(desired_ticks) <= earliest) {
+    desired_ticks = earliest > cfg::MAX_EVENT_INTERVAL_TICKS
+      ? cfg::MAX_EVENT_INTERVAL_TICKS
+      : uint16_t(earliest);
+    ++timer_guard_hits_;
+  }
+
+  if (desired_ticks < min_interval_ticks_) min_interval_ticks_ = desired_ticks;
+  if (desired_ticks > max_interval_ticks_) max_interval_ticks_ = desired_ticks;
+  OCR1A = desired_ticks;
+}
+
 bool StepperEngine::loadNextMotionBlock() {
   if (!queue_ || !queue_->popFromISR(current_block_)) return false;
   if (!dda_.begin(current_block_.steps, current_block_.smoothing_level)) return false;
   initBlockTiming(current_block_);
+  ++blocks_loaded_;
   block_active_ = true;
   return true;
 }
@@ -200,7 +248,7 @@ void StepperEngine::motionISR() {
   if (!block_active_) {
     if (!loadNextMotionBlock()) { mode_ = MODE_IDLE; stopTimerFromISR(); return; }
     applyDirectionBits(current_block_.direction_bits);
-    OCR1A = currentMotionInterval();
+    scheduleMotionInterval(currentMotionInterval());
     return;
   }
 
@@ -210,6 +258,7 @@ void StepperEngine::motionISR() {
     const uint8_t bit = uint8_t(1U << axis);
     if (!(sm.bits & bit)) continue;
     writeStep(axis, true); pulse |= bit;
+    ++real_steps_[axis];
     const bool positive = current_block_.direction_bits & bit;
     motor_position_steps_[axis] += positive ? 1 : -1;
   }
@@ -235,13 +284,16 @@ void StepperEngine::motionISR() {
         applyDirectionBits(current_block_.direction_bits);
         direction_pending_ = false;
       }
-      OCR1A = currentMotionInterval();
+      scheduleMotionInterval(currentMotionInterval());
     }
-    else OCR1A = cfg::STARTUP_EVENT_TICKS;
+    else {
+      ++queue_empty_stops_;
+      OCR1A = cfg::STARTUP_EVENT_TICKS;
+    }
   }
   else {
     advanceBlockTiming();
-    OCR1A = currentMotionInterval();
+    scheduleMotionInterval(currentMotionInterval());
   }
 }
 
@@ -272,6 +324,8 @@ void StepperEngine::homeISR() {
 }
 
 void StepperEngine::onCompareA() {
+  const uint16_t entry_ticks = TCNT1;
+  if (entry_ticks > max_isr_entry_ticks_) max_isr_entry_ticks_ = entry_ticks;
   if (mode_ == MODE_MOTION) motionISR();
   else if (mode_ == MODE_HOME) homeISR();
   else stopTimerFromISR();
