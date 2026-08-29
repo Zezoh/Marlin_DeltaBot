@@ -75,6 +75,7 @@ private:
   bool stream_active_;
   bool motion_started_;
   bool generating_move_;
+  bool planner_plan_valid_;
   bool flush_requested_;
   uint32_t last_enqueue_ms_;
   float carry_entry_speed_mm_s_;
