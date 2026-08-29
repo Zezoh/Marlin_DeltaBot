@@ -72,6 +72,11 @@ constexpr uint16_t STARTUP_EVENT_TICKS = 200;
 constexpr uint16_t TIMER_ISR_GUARD_TICKS = 24;
 
 constexpr uint8_t MOTION_QUEUE_SIZE = 32;
+// Do not start consuming generated Delta blocks after the first block. Complex
+// 3D Delta paths spend substantial main-loop time in IK/chord-error math; a
+// deep initial reservoir prevents that computation from becoming visible as
+// step starvation and violent stop/restart motion.
+constexpr uint8_t MOTION_START_PREFILL_BLOCKS = 24;
 constexpr uint8_t SERIAL_LINE_SIZE = 192;
 constexpr uint32_t DEBUG_HEARTBEAT_MS = 5000UL;
 
