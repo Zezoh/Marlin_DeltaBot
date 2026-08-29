@@ -421,11 +421,10 @@ void MotionController::service() {
     if (planner_.full() || streamClosed()) stream_active_ = true;
   }
 
-  // If Timer1 stopped because the motor queue ran dry while trajectory work is
-  // still pending, drop back to PREFILL state. The previous implementation kept
-  // motion_started_=true and kicked as soon as ONE block arrived, producing a
-  // repeated stop -> one block -> stop cascade.
-  if (motion_started_ && stream_active_ && !stepper_.motionBusy())
+  // Detect the actual Timer1 execution state, not merely buffered work. A
+  // prefetched block can exist while Timer1 is stopped after an underrun; using
+  // motionBusy() here would misclassify that state and restart on one block.
+  if (motion_started_ && stream_active_ && !stepper_.executionActive())
     motion_started_ = false;
 
   // Adaptive bounded producer. Normally generate one segment per pass for
