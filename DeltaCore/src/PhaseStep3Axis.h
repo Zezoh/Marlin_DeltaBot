@@ -23,6 +23,13 @@ public:
              bool anchor,
              const int32_t actual_steps[3]);
 
+  // Fast block-to-block path. Fractional phase remains exactly where the
+  // previous block ended, so no repeated phase_start array is required.
+  bool beginContinuation(const int32_t phase_end_q15[3],
+                         const int32_t phase_inc_q15[3],
+                         uint32_t total_events,
+                         const int32_t actual_steps[3]);
+
   PhaseStepMask next();
   bool active() const { return completed_events_ < total_events_; }
   bool valid() const { return valid_; }
