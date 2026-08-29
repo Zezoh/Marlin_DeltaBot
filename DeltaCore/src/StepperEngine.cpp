@@ -188,7 +188,14 @@ void StepperEngine::servicePrefetch() {
 }
 
 bool StepperEngine::loadNextMotionBlock() {
-  if (!prefetch_valid_) return false;
+  // Normal path: the main loop publishes the next compact MotorBlock.
+  // Hard real-time fallback: if main-loop prefetch misses its deadline but
+  // the ring still contains blocks, consume one here instead of stopping
+  // Timer1. This is intentionally a fallback, not the common path.
+  if (!prefetch_valid_) {
+    if (!queue_ || !queue_->popFromISR(*prefetch_block_)) return false;
+    prefetch_valid_ = true;
+  }
   MotorBlock *old_active = active_block_;
   active_block_ = prefetch_block_;
   prefetch_block_ = old_active;
