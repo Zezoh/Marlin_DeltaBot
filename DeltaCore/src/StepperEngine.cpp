@@ -178,8 +178,6 @@ void StepperEngine::scheduleMotionInterval(uint16_t desired_ticks) {
 
 void StepperEngine::servicePrefetch() {
   if (!queue_ || prefetch_valid_ || mode_ == MODE_HOME || queue_->empty()) return;
-  // Main loop is now the sole consumer of MotionQueue. The ISR consumes only
-  // this published buffer, so the 48-byte ring-buffer copy never occurs in ISR.
   if (!queue_->popFromISR(*prefetch_block_)) return;
   asm volatile("" ::: "memory");
   prefetch_valid_ = true;
@@ -209,7 +207,9 @@ bool StepperEngine::loadNextMotionBlock() {
 }
 
 void StepperEngine::kickMotion() {
-  if (fault_ != FAULT_NONE || !prefetch_valid_) return;
+  if (fault_ != FAULT_NONE) return;
+  servicePrefetch();
+  if (!prefetch_valid_) return;
   noInterrupts();
   if (mode_ == MODE_IDLE) {
     mode_ = MODE_MOTION;
