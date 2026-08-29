@@ -1,8 +1,8 @@
 #pragma once
 
 #include <stdint.h>
-#include "Dda3Axis.h"
 #include "MotionQueue.h"
+#include "PhaseStep3Axis.h"
 
 namespace deltacore {
 
@@ -27,6 +27,9 @@ struct StepperStats {
   uint32_t queue_empty_stops;
   uint32_t timer_guard_hits;
   uint32_t real_steps[3];
+  uint32_t phase_anchors;
+  uint32_t phase_boundary_corrections;
+  uint32_t phase_faults;
   uint16_t min_interval_ticks;
   uint16_t max_interval_ticks;
   uint16_t max_isr_entry_ticks;
@@ -65,7 +68,7 @@ private:
   enum HomeKind : uint8_t { HOME_KIND_NONE = 0, HOME_KIND_SEEK, HOME_KIND_BACKOFF };
 
   MotionQueue *queue_;
-  Dda3Axis dda_;
+  PhaseStep3Axis phase_;
   MotorBlock current_block_;
   volatile Mode mode_;
   volatile bool block_active_;
@@ -77,6 +80,7 @@ private:
   volatile uint32_t queue_empty_stops_;
   volatile uint32_t timer_guard_hits_;
   volatile uint32_t real_steps_[3];
+  volatile uint32_t phase_faults_;
   volatile uint16_t min_interval_ticks_;
   volatile uint16_t max_interval_ticks_;
   volatile uint16_t max_isr_entry_ticks_;
@@ -90,7 +94,7 @@ private:
   volatile uint8_t pending_direction_bits_;
 
   // Q8 interval ramp state. MotionController precomputes the slope, so the ISR
-  // only performs one signed 32-bit add and one shift per step event.
+  // only performs one signed 32-bit add and one shift per phase event.
   int32_t current_interval_q8_;
   int32_t interval_delta_q8_;
 
