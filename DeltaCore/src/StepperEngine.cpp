@@ -31,7 +31,18 @@ uint8_t StepperEngine::endstopMask()const{uint8_t m=0;for(uint8_t a=0;a<3;++a)if
 void StepperEngine::startTimer(uint16_t t){TCNT1=0;OCR1A=t;TIFR1=_BV(OCF1A)|_BV(OCF1B);TIMSK1=_BV(OCIE1A);}
 void StepperEngine::stopTimerFromISR(){TIMSK1=0;allStepsInactive();}
 
-void StepperEngine::servicePrefetch(){if(!queue_||prefetch_valid_||mode_==MODE_HOME||queue_->empty())return;if(!queue_->popFromISR(*prefetch_block_))return;asm volatile("":::"memory");prefetch_valid_=true;}
+void StepperEngine::servicePrefetch(){
+  if(!queue_)return;
+  const uint8_t saved_sreg=SREG;
+  cli();
+  if(!prefetch_valid_&&mode_!=MODE_HOME&&!queue_->empty()){
+    if(queue_->popFromISR(*prefetch_block_)){
+      asm volatile("":::"memory");
+      prefetch_valid_=true;
+    }
+  }
+  SREG=saved_sreg;
+}
 
 bool StepperEngine::loadNextMotionBlock(){if(!prefetch_valid_){if(!queue_||!queue_->popFromISR(*prefetch_block_))return false;prefetch_valid_=true;}MotorBlock*old=active_block_;active_block_=prefetch_block_;prefetch_block_=old;prefetch_valid_=false;const MotorBlock&b=currentBlock();if(!b.event_count||!b.interval_base_ticks){fault_=FAULT_INTERNAL;return false;}for(uint8_t a=0;a<3;++a)dda_accum_[a]=b.event_count>>1;event_index_=0;timing_accum_=0;++blocks_loaded_;block_active_=true;return true;}
 
