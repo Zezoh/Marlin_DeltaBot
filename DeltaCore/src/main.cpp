@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <ctype.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -120,8 +121,6 @@ static void processCommand(char *line) {
     return;
   }
 
-  // Basic host compatibility. These are intentionally harmless/no-op because
-  // DeltaCore does not own heaters, SD, or line-number state.
   if (commandStarts(line, "M105")) { Serial.println(F("ok T:0.0 /0.0 B:0.0 /0.0")); return; }
   if (commandStarts(line, "M110")) { Serial.println(F("ok")); return; }
 
