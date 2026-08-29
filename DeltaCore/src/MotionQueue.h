@@ -11,18 +11,14 @@ enum MotorBlockFlags : uint8_t {
 };
 
 struct MotorBlock {
-  // Absolute continuous tower position in step-Q15 space. The first block in
-  // a batch anchors the phase to phase_start_q15. Every following block starts
-  // at the exact previous phase_end_q15, so fractional phase is never reset at
-  // Delta segment boundaries.
-  int32_t phase_start_q15[3];
+  // The first block anchors from StepperEngine::phase_anchor_q15_. Every later
+  // block starts from the exact internal phase where the previous block ended,
+  // so phase_start does not need to be duplicated in all 32 queue entries.
   int32_t phase_end_q15[3];
   int32_t phase_inc_q15[3];
   uint32_t virtual_events;
   uint8_t direction_bits;
   uint8_t flags;
-
-  // Event timing remains Q8 so the Timer1 ISR only needs integer add/shift.
   uint16_t interval_start_ticks;
   int32_t interval_delta_q8;
 };
