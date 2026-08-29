@@ -33,25 +33,15 @@ constexpr float MAX_SEGMENT_MM = 3.00f;
 constexpr float MAX_TOWER_CHORD_ERROR_MM = 0.0040f;
 constexpr uint8_t MAX_SEGMENT_SPLITS = 5;
 
-// At low feedrates, very small spatial blocks contain too few real master-axis
-// steps. Rounding the Delta endpoints then changes the block event rate in large
-// audible increments. Keep enough real events per low-speed block before the
-// chord-error splitter is applied. This reduces the "choked / breathing" sound
-// without changing the Cartesian path or the final tower step counts.
+// Low-speed endpoint quantization protection retained from v0.3.1.
 constexpr float LOW_SPEED_SEGMENT_THRESHOLD_MM_S = 20.0f;
 constexpr uint8_t MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT = 48;
 
-// Burst look-ahead queue. Pronterface sends one line, waits for "ok", then sends
-// the next. 35 ms was short enough for a batch to start in the middle of a
-// multi-line paste. 200 ms is still a small interactive delay but reliably keeps
-// the burst together; M400 / FLUSH starts it immediately.
+// Burst look-ahead queue. M400 / FLUSH starts it immediately.
 constexpr uint8_t PATH_QUEUE_SIZE = 16;
 constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
 
-// AMASS-style low-speed DDA oversampling. v0.3 used L3 (x8) aggressively.
-// Hardware feedback showed that this did not improve the dominant low-speed
-// issue, which was block-rate quantization. Auto mode is now deliberately mild
-// (maximum x2); x4 remains available as a diagnostic/runtime option.
+// Low-speed DDA phase oversampling. Auto remains deliberately mild.
 constexpr uint8_t MAX_SMOOTHING_LEVEL = 2;
 constexpr uint8_t AUTO_SMOOTHING_MAX_LEVEL = 1;
 constexpr uint16_t SMOOTH_L1_INTERVAL_TICKS = 1800;
@@ -68,8 +58,14 @@ constexpr uint16_t MIN_EVENT_INTERVAL_TICKS = 80;
 constexpr uint16_t MAX_EVENT_INTERVAL_TICKS = 65000;
 constexpr uint16_t STARTUP_EVENT_TICKS = 200;
 
+// If an ISR takes long enough that a newly requested OCR1A deadline is already
+// too close to TCNT1, push the compare safely forward instead of risking a
+// missed compare and a long apparent stall. 24 ticks = 12 us at 2 MHz.
+constexpr uint16_t TIMER_ISR_GUARD_TICKS = 24;
+
 constexpr uint8_t MOTION_QUEUE_SIZE = 32;
-constexpr uint8_t SERIAL_LINE_SIZE = 128;
+constexpr uint8_t SERIAL_LINE_SIZE = 192;
+constexpr uint32_t DEBUG_HEARTBEAT_MS = 5000UL;
 
 } // namespace cfg
 } // namespace deltacore
