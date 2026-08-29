@@ -92,7 +92,7 @@ static void printStatus() {
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.3.1 motion settings:"));
+  Serial.println(F("DeltaCore v0.3.2 motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
   Serial.print(F("  max_cart_feed=")); Serial.println(cfg::MAX_CARTESIAN_FEED_MM_S, 1);
@@ -103,6 +103,7 @@ static void printMotionSettings() {
   Serial.print(F("  lookahead_hold_ms=")); Serial.println(cfg::LOOKAHEAD_HOLD_MS);
   Serial.print(F("  smoothing_mode=")); Serial.println(motion.smoothingMode());
   Serial.println(F("    -1=auto(mild x2 max), 0=off, 1=x2, 2=x4"));
+  Serial.println(F("  timing=time-domain Q8 interval ramp from continuous tower displacement"));
 }
 
 static bool commandStarts(const char *line, const char *cmd) {
@@ -125,21 +126,21 @@ static void processCommand(char *line) {
   if (commandStarts(line, "M110")) { Serial.println(F("ok")); return; }
 
   if (commandStarts(line, "HELP")) {
-    Serial.println(F("DeltaCore v0.3.1: M119 G28 G0/G1 M400/FLUSH M114 M204 M970 M17 M18 M112 M999 M115 M503 STATUS"));
+    Serial.println(F("DeltaCore v0.3.2: M119 G28 G0/G1 M400/FLUSH M114 M204 M970 M17 M18 M112 M999 M115 M503 STATUS"));
     return;
   }
   if (commandStarts(line, "STATUS")) { printStatus(); return; }
   if (commandStarts(line, "M119")) { printEndstops(); return; }
   if (commandStarts(line, "M114")) { printPosition(); return; }
   if (commandStarts(line, "M503")) { printMotionSettings(); Serial.println(F("ok")); return; }
-  if (commandStarts(line, "M500")) { Serial.println(F("echo:EEPROM not implemented in DeltaCore v0.3.1")); Serial.println(F("ok")); return; }
+  if (commandStarts(line, "M500")) { Serial.println(F("echo:EEPROM not implemented in DeltaCore v0.3.2")); Serial.println(F("ok")); return; }
   if (commandStarts(line, "M502")) {
     if (!motion.setAcceleration(cfg::DEFAULT_ACCEL_MM_S2)) { Serial.println(F("error:BUSY")); return; }
     if (!motion.setSmoothingMode(-1)) { Serial.println(F("error:BUSY")); return; }
     Serial.println(F("ok runtime motion defaults restored")); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.println(F("FIRMWARE_NAME:DeltaCore VERSION:0.3.1 BOARD:MKS_MINI_20 MCU:ATmega2560 MOTION:LOOKAHEAD+TOWER_LIMITS+ADAPTIVE_DELTA+SMOOTH_DDA"));
+    Serial.println(F("FIRMWARE_NAME:DeltaCore VERSION:0.3.2 BOARD:MKS_MINI_20 MCU:ATmega2560 MOTION:LOOKAHEAD+TOWER_LIMITS+ADAPTIVE_DELTA+TIME_RAMP_DDA"));
     return;
   }
 
@@ -224,10 +225,10 @@ void setup() {
   stepper.begin(motion_queue);
   motion.begin();
   Serial.println();
-  Serial.println(F("DeltaCore 0.3.1 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.3.2 - Mega2560 / MKS MINI v2.0"));
   Serial.println(F("Motion: look-ahead + junction deviation + tower-space speed/accel limits"));
-  Serial.println(F("Delta: adaptive chord-error segmentation with low-speed event-floor"));
-  Serial.println(F("Stepper: mild adaptive DDA smoothing; M970 S0/S1/S2 for A-B tests"));
+  Serial.println(F("Timing: continuous tower-rate derived Q8 interval ramp inside each block"));
+  Serial.println(F("Delta: adaptive chord-error segmentation; DDA smoothing remains optional"));
   Serial.println(F("SAFE BOOT: motors disabled, G28 required before G1"));
   Serial.println(F("Sequential G1 commands collect for 200ms; M400 or FLUSH starts immediately."));
   Serial.println(F("ok READY"));
