@@ -1,6 +1,6 @@
 /* Strict scenario harness layered on the original RAMPS 1.4 simulator.
    It reuses the exact ATmega2560/RAMPS/A4988/endstop model, rejects partial
-   UART PERF lines, isolates failed scenarios, and sends motion through normal
+   UART lines, isolates failed scenarios, and sends motion through normal
    firmware ACK credits instead of an unrealistic unbounded raw UART burst. */
 #define main deltacore_hil_legacy_main
 #include "simavr_ramps14_hil.c"
@@ -14,6 +14,19 @@ static const char *last_complete_perf_from_v2(Sim *s, size_t from) {
         if (!e) break;
         const char *health = strstr(p, "health=");
         if (health && health < e) last = p;
+        p = e + 1;
+    }
+    return last;
+}
+
+static const char *last_complete_position_from_v2(Sim *s, size_t from) {
+    const char *p = s->out + from;
+    const char *last = NULL;
+    while ((p = strstr(p, "XYZ X:"))) {
+        const char *e = strchr(p, '\n');
+        if (!e) break;
+        const char *tower = strstr(p, "TOWER A:");
+        if (tower && tower < e) last = p;
         p = e + 1;
     }
     return last;
@@ -73,9 +86,9 @@ static void check_perf_clean_v2(Sim *s, size_t from, int expected_moves,
     const int moves = parse_field(p, "moves=", expected_moves);
     const char *health = strstr(p, "health=CLEAN");
     if (starves != 0 || guards != 0 || !health || (e && health > e)) {
-        char msg[260];
+        char msg[300];
         snprintf(msg, sizeof(msg), "%s PERF not clean: %.*s", label,
-                 e ? (int)(e - p) : 220, p);
+                 e ? (int)(e - p) : 250, p);
         fail(s, msg);
     }
     if (expected_moves >= 0 && moves != expected_moves) {
@@ -108,23 +121,44 @@ static bool run_path_v2(Sim *s, const char *label, const char *gcode, int moves,
         fail(s, msg);
         return false;
     }
-    if (!wait_complete_perf_v2(s, mark, 3000)) {
+
+    /* A previous scenario may still have UART bytes draining after 'mark'.
+       Scope PERF/position parsing strictly AFTER this scenario's PATH_DONE so
+       an old complete PERF line can never satisfy the new scenario. */
+    const char *path_done = strstr(s->out + mark, "echo:PATH_DONE");
+    if (!path_done) { fail(s, "PATH_DONE vanished from UART buffer"); return false; }
+    const size_t result_from = (size_t)(path_done - s->out);
+    if (!wait_complete_perf_v2(s, result_from, 3000)) {
         char msg[140];
-        snprintf(msg, sizeof(msg), "%s timeout waiting complete PERF", label);
+        snprintf(msg, sizeof(msg), "%s timeout waiting current-path PERF", label);
         fail(s, msg);
         return false;
     }
 
     check_no_errors(s, mark, label);
     check_target(s, x, y, z, label);
-    check_perf_clean_v2(s, mark, moves, label);
-    if (s->failures != failures_before) return false;
+    check_perf_clean_v2(s, result_from, moves, label);
+    if (s->failures != failures_before) {
+        const char *pos = last_complete_position_from_v2(s, result_from);
+        const char *perf = last_complete_perf_from_v2(s, result_from);
+        if (pos) {
+            const char *e = strchr(pos, '\n');
+            fprintf(stderr, "HIL %s INTERNAL %.*s\n", label,
+                    e ? (int)(e - pos) : 240, pos);
+        }
+        if (perf) {
+            const char *e = strchr(perf, '\n');
+            fprintf(stderr, "HIL %s CURRENT_PERF %.*s\n", label,
+                    e ? (int)(e - perf) : 280, perf);
+        }
+        return false;
+    }
 
-    const char *perf = last_complete_perf_from_v2(s, mark);
+    const char *perf = last_complete_perf_from_v2(s, result_from);
     const char *e = perf ? strchr(perf, '\n') : NULL;
     printf("PASS HIL %s cycles=%llu PERF=%.*s\n", label,
            (unsigned long long)s->avr->cycle,
-           perf ? (e ? (int)(e - perf) : 220) : 0,
+           perf ? (e ? (int)(e - perf) : 250) : 0,
            perf ? perf : "");
     return true;
 }
@@ -167,8 +201,6 @@ int main(int argc, char **argv) {
                      "G1 X40 Y0 Z120 F4800\n", 1, 40, 0, 120, 6000)) goto done;
     if (!run_path_v2(&s, "45-move-real-regression",
                      PATH45, 45, 0, 0, 120, 15000)) goto done;
-    /* First line only changes modal feed at the already-current XYZ. The
-       intended PERF count is physical moves, so it is not counted. */
     if (!run_path_v2(&s, "short-segment-torture",
                      SHORT, 52, 0, 0, 120, 15000)) goto done;
 
