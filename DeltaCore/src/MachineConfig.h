@@ -49,6 +49,7 @@ constexpr uint16_t SMOOTH_L2_INTERVAL_TICKS = 5000;
 // array while allowing a continuous stream across planning windows.
 constexpr uint8_t PATH_QUEUE_SIZE = 16;
 constexpr uint8_t STREAM_PENDING_SIZE = 64;
+constexpr uint8_t STREAM_ADMISSION_RESERVE = 2;
 constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
 
 constexpr float HOME_FAST_MM_S = 35.0f;

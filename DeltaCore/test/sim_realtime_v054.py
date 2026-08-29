@@ -7,6 +7,7 @@ BYTE_US = 10_000_000 / BAUD
 RX_CAP = 512
 PATH_CAP = 16
 PENDING_CAP = 64
+ADMISSION_LIMIT = PATH_CAP + PENDING_CAP - 2
 LOOKAHEAD_RESERVE = 4
 LOW = 14
 TARGET = 28
@@ -127,6 +128,11 @@ class RealtimeSim:
     def serial_slice(self):
         lines=0; consumed=0
         while self.rx and lines<2 and consumed<96:
+            # Firmware admission control: only pause at a line boundary and
+            # only when the compact motion ingress is genuinely near full.
+            # Crucially, no ACK is generated while paused.
+            if not self.line and (len(self.path)+len(self.pending)) >= ADMISSION_LIMIT:
+                return
             c=self.rx.popleft(); consumed+=1
             self.advance(2)
             if c==13:

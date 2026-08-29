@@ -445,6 +445,13 @@ static void serviceSerial() {
   uint8_t completed_lines = 0;
   uint8_t consumed_bytes = 0;
   while (Serial.available() > 0 && completed_lines < 2U && consumed_bytes < 96U) {
+    // Near the actual motion-ingress capacity, stop only at a clean line
+    // boundary and withhold the next ACK. A credit-paced host then pauses,
+    // while the 512-byte RX ring safely holds the few already-in-flight lines.
+    // Unlike the old v0.5.3 high-water gate, this does not throttle normal
+    // 45..75-line raw bursts far below available capacity.
+    const uint8_t admission_limit = uint8_t(cfg::PATH_QUEUE_SIZE + cfg::STREAM_PENDING_SIZE - cfg::STREAM_ADMISSION_RESERVE);
+    if (!discard_line && line_length == 0 && motion.queuedMoves() >= admission_limit) return;
     const char c = char(Serial.read());
     ++consumed_bytes;
     if (c == '\r') continue;
