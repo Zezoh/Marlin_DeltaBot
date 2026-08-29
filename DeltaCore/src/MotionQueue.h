@@ -9,7 +9,13 @@ struct MotorBlock {
   uint32_t steps[3];
   uint8_t direction_bits;
   uint8_t smoothing_level;
-  uint16_t interval_ticks;
+
+  // Time-domain step scheduling. The block starts at interval_start_ticks and
+  // changes the interval by interval_delta_q8 after every virtual DDA event.
+  // Q8 keeps the ISR to integer add/shift operations while providing 1/256
+  // timer-tick interpolation resolution.
+  uint16_t interval_start_ticks;
+  int32_t interval_delta_q8;
 };
 
 class MotionQueue {
