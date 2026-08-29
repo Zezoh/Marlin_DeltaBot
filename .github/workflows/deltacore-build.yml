@@ -1,4 +1,4 @@
-# DeltaCore v0.5.5 + cycle-accurate RAMPS 1.4 HIL verification (controller-owned Timer1 start)
+# DeltaCore cycle-accurate RAMPS 1.4 verification + AVR hot-path profiling
 name: DeltaCore AVR Build
 
 on:
@@ -61,13 +61,22 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y simavr libsimavr-dev pkg-config
 
-      - name: Build RAMPS 1.4 three-stepper HIL simulator
+      - name: Build RAMPS 1.4 HIL and AVR profiler
         run: |
           CFLAGS="$(pkg-config --cflags simavr 2>/dev/null || echo -I/usr/include/simavr)"
           LIBS="$(pkg-config --libs simavr 2>/dev/null || echo '-lsimavr -lelf -lpthread')"
           cc -std=c11 -O2 -Wall -Wextra $CFLAGS \
             DeltaCore/test/simavr_ramps14_hil.c \
             -o /tmp/deltacore_ramps14_hil $LIBS -lm
+          cc -std=c11 -O2 -Wall -Wextra $CFLAGS \
+            DeltaCore/test/simavr_ramps14_profile.c \
+            -o /tmp/deltacore_ramps14_profile $LIBS -lm
+
+      - name: Profile short-segment hot path on real AVR cycles
+        continue-on-error: true
+        run: |
+          timeout 180s /tmp/deltacore_ramps14_profile \
+            DeltaCore/.pio/build/megaatmega2560/firmware.elf
 
       - name: Cycle-accurate ATmega2560 + RAMPS 1.4 + 3xA4988 HIL
         run: |
@@ -85,7 +94,7 @@ jobs:
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560-v0.5.5-HIL
+          name: DeltaCore-Mega2560-HIL
           path: |
             DeltaCore/.pio/build/megaatmega2560/firmware.hex
             DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
