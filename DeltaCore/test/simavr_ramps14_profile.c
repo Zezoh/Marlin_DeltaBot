@@ -1,6 +1,7 @@
 /* Diagnostic profiler built on the full RAMPS 1.4 HIL harness.
    It executes the real firmware ELF and attributes ATmega2560 cycles to
-   selected ELF symbols while running the short-segment torture path. */
+   selected ELF symbols while running the short-segment torture path.
+   Compatible with Ubuntu simavr 1.6, whose avr_symbol_t has address+name only. */
 #define main deltacore_hil_original_main
 #include "simavr_ramps14_hil.c"
 #undef main
@@ -10,6 +11,8 @@
 typedef struct {
     const char *needle;
     const avr_symbol_t *sym;
+    uint32_t start_addr;
+    uint32_t end_addr;
     uint64_t exclusive_cycles;
     uint64_t calls;
     uint64_t max_inclusive_cycles;
@@ -20,14 +23,14 @@ typedef struct {
 } CycleProfile;
 
 static CycleProfile profiles[PROFILE_COUNT] = {
-    {"MotionController7serviceEv",0,0,0,0,0,false,0,0},
-    {"PathPlanner4planE",0,0,0,0,0,false,0,0},
-    {"fillPlannerFromPending",0,0,0,0,0,false,0,0},
-    {"cartesianToTower",0,0,0,0,0,false,0,0},
-    {"motionMetrics",0,0,0,0,0,false,0,0},
-    {"JerkProfile6sample",0,0,0,0,0,false,0,0},
-    {"JerkProfile9configure",0,0,0,0,0,false,0,0},
-    {"maxReachableSpeed",0,0,0,0,0,false,0,0},
+    {"MotionController7serviceEv",0,0,0,0,0,0,0,false,0,0},
+    {"PathPlanner4planE",0,0,0,0,0,0,0,false,0,0},
+    {"fillPlannerFromPending",0,0,0,0,0,0,0,false,0,0},
+    {"cartesianToTower",0,0,0,0,0,0,0,false,0,0},
+    {"motionMetrics",0,0,0,0,0,0,0,false,0,0},
+    {"JerkProfile6sample",0,0,0,0,0,0,0,false,0,0},
+    {"JerkProfile9configure",0,0,0,0,0,0,0,false,0,0},
+    {"maxReachableSpeed",0,0,0,0,0,0,0,false,0,0},
 };
 
 static uint16_t avr_sp(avr_t *avr) {
@@ -35,23 +38,35 @@ static uint16_t avr_sp(avr_t *avr) {
 }
 
 static void resolve_profiles(const elf_firmware_t *fw) {
+    /* Pick one matching text symbol for each profiler entry. */
     for (uint32_t i=0;i<fw->symbolcount;++i) {
         const avr_symbol_t *sym=fw->symbol[i];
-        if (!sym || !sym->size) continue;
+        if (!sym || sym->addr >= AVR_SEGMENT_OFFSET_DATA) continue;
         for (int p=0;p<PROFILE_COUNT;++p) {
-            if (strstr(sym->symbol, profiles[p].needle)) {
-                if (!profiles[p].sym || sym->size > profiles[p].sym->size)
-                    profiles[p].sym=sym;
-            }
+            if (!profiles[p].sym && strstr(sym->symbol, profiles[p].needle))
+                profiles[p].sym=sym;
         }
     }
+
+    /* Old simavr does not expose ELF symbol sizes. Infer a conservative code
+       range from the next flash symbol address. Inclusive call timing is based
+       on stack restoration and therefore does not depend on this inferred end. */
     for (int p=0;p<PROFILE_COUNT;++p) {
-        if (profiles[p].sym)
-            printf("PROFILE SYMBOL %-28s addr=0x%06x size=%u name=%s\n",
-                   profiles[p].needle, profiles[p].sym->addr, profiles[p].sym->size,
-                   profiles[p].sym->symbol);
-        else
-            printf("PROFILE SYMBOL %-28s NOT_FOUND_OR_INLINED\n", profiles[p].needle);
+        CycleProfile *pr=&profiles[p];
+        if (!pr->sym) {
+            printf("PROFILE SYMBOL %-28s NOT_FOUND_OR_INLINED\n",pr->needle);
+            continue;
+        }
+        pr->start_addr=pr->sym->addr;
+        uint32_t next=0xffffffffu;
+        for (uint32_t i=0;i<fw->symbolcount;++i) {
+            const avr_symbol_t *s=fw->symbol[i];
+            if (!s || s->addr >= AVR_SEGMENT_OFFSET_DATA) continue;
+            if (s->addr > pr->start_addr && s->addr < next) next=s->addr;
+        }
+        pr->end_addr=(next==0xffffffffu)?(pr->start_addr+2u):next;
+        printf("PROFILE SYMBOL %-28s addr=0x%06x..0x%06x name=%s\n",
+               pr->needle,pr->start_addr,pr->end_addr,pr->sym->symbol);
     }
 }
 
@@ -67,11 +82,11 @@ static void reset_profiles(void) {
 
 static int profiled_run_one(Sim *s) {
     if (s->tx_pos < s->tx_len && s->uart_xon && s->avr->cycle >= s->next_tx_cycle) {
-        avr_raise_irq(s->uart_in, (uint8_t)s->tx[s->tx_pos++]);
+        avr_raise_irq(s->uart_in,(uint8_t)s->tx[s->tx_pos++]);
         s->next_tx_cycle += UART_CYCLES_PER_BYTE;
         if (s->tx_pos == s->tx_len) {
-            s->tx_pos = s->tx_len = 0;
-            s->next_tx_cycle = 0;
+            s->tx_pos=s->tx_len=0;
+            s->next_tx_cycle=0;
         }
     }
 
@@ -81,7 +96,7 @@ static int profiled_run_one(Sim *s) {
     for (int p=0;p<PROFILE_COUNT;++p) {
         CycleProfile *pr=&profiles[p];
         if (!pr->sym) continue;
-        if (!pr->active && pc == pr->sym->addr) {
+        if (!pr->active && pc == pr->start_addr) {
             pr->active=true;
             pr->entry_sp=sp_before;
             pr->start_cycle=before;
@@ -96,7 +111,7 @@ static int profiled_run_one(Sim *s) {
     for (int p=0;p<PROFILE_COUNT;++p) {
         CycleProfile *pr=&profiles[p];
         if (!pr->sym) continue;
-        if (pc >= pr->sym->addr && pc < pr->sym->addr + pr->sym->size)
+        if (pc >= pr->start_addr && pc < pr->end_addr)
             pr->exclusive_cycles += delta;
         if (pr->active && sp_after > pr->entry_sp) {
             const uint64_t inc=(uint64_t)(s->avr->cycle-pr->start_cycle);
@@ -108,7 +123,7 @@ static int profiled_run_one(Sim *s) {
     return (st == cpu_Crashed || st == cpu_Done) ? -1 : 0;
 }
 
-static bool profile_wait_token(Sim *s, size_t from, const char *token, uint32_t timeout_ms) {
+static bool profile_wait_token(Sim *s,size_t from,const char *token,uint32_t timeout_ms) {
     const avr_cycle_count_t deadline=s->avr->cycle+(avr_cycle_count_t)timeout_ms*(CPU_HZ/1000UL);
     while (s->avr->cycle < deadline) {
         if (s->out_len > from && strstr(s->out+from,token)) return true;
@@ -148,11 +163,10 @@ int main(int argc,char **argv) {
     for(int a=0;a<AXES;++a) s.motor[a].home_baseline=s.motor[a].pos;
 
     reset_profiles();
-    size_t mark=s.out_len;
+    const size_t mark=s.out_len;
     const avr_cycle_count_t start=s.avr->cycle;
     enqueue_line(&s,"M972"); enqueue_raw(&s,SHORT); enqueue_line(&s,"M400"); enqueue_line(&s,"M971");
     const bool done=profile_wait_token(&s,mark,"echo:PATH_DONE",60000);
-    /* Continue through complete PERF UART line if motion completed. */
     if (done) profile_wait_token(&s,mark,"health=",3000);
     const avr_cycle_count_t elapsed=s.avr->cycle-start;
     print_profiles(elapsed);
@@ -160,7 +174,7 @@ int main(int argc,char **argv) {
     const char *perf=last_perf_from(&s,mark);
     if (perf) {
         const char *e=strchr(perf,'\n');
-        printf("PROFILE PERF: %.*s\n", e?(int)(e-perf):240, perf);
+        printf("PROFILE PERF: %.*s\n",e?(int)(e-perf):240,perf);
     }
     printf("PROFILE path_done=%d physical=%lld/%lld/%lld\n",done?1:0,
            (long long)s.motor[0].pos,(long long)s.motor[1].pos,(long long)s.motor[2].pos);
