@@ -13,7 +13,7 @@ struct StepMask {
 class Dda3Axis {
 public:
   Dda3Axis();
-  bool begin(const uint32_t steps[AXIS_COUNT]);
+  bool begin(const uint32_t steps[AXIS_COUNT], uint8_t smoothing_level = 0);
   StepMask next();
   bool active() const;
   uint32_t totalEvents() const;
