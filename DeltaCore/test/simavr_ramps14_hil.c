@@ -55,6 +55,8 @@ struct Sim {
     avr_t *avr;
     avr_irq_t *uart_in;
     bool uart_xon;
+    uint32_t uart_xon_events;
+    uint32_t uart_xoff_events;
     char tx[TX_CAP];
     size_t tx_len, tx_pos;
     avr_cycle_count_t next_tx_cycle;
@@ -65,6 +67,10 @@ struct Sim {
     Hook hook[AXES][3];
     int failures;
 };
+
+static size_t uart_pending_bytes(const Sim *s) {
+    return s->tx_len >= s->tx_pos ? s->tx_len - s->tx_pos : 0U;
+}
 
 static void fail(Sim *s, const char *msg) {
     fprintf(stderr, "HIL FAIL: %s\n", msg);
@@ -138,11 +144,24 @@ static void uart_out_hook(struct avr_irq_t *irq, uint32_t value, void *param) {
 
 static void uart_xon_hook(struct avr_irq_t *irq, uint32_t value, void *param) {
     (void)irq; (void)value;
-    ((Sim *)param)->uart_xon = true;
+    Sim *s = (Sim *)param;
+    if (!s->uart_xon) {
+        s->uart_xon = true;
+        ++s->uart_xon_events;
+        /* A real sender does not transmit a backlog at infinite speed after
+           receiver flow control opens. Resume one full 250 kbaud byte-time
+           from NOW instead of catching up against an old deadline. */
+        if (s->tx_pos < s->tx_len)
+            s->next_tx_cycle = s->avr->cycle + UART_CYCLES_PER_BYTE;
+    }
 }
 static void uart_xoff_hook(struct avr_irq_t *irq, uint32_t value, void *param) {
     (void)irq; (void)value;
-    ((Sim *)param)->uart_xon = false;
+    Sim *s = (Sim *)param;
+    if (s->uart_xon) {
+        s->uart_xon = false;
+        ++s->uart_xoff_events;
+    }
 }
 
 static void enqueue_raw(Sim *s, const char *text) {
@@ -150,7 +169,8 @@ static void enqueue_raw(Sim *s, const char *text) {
     if (s->tx_len + n >= TX_CAP) { fail(s, "host TX buffer overflow"); return; }
     memcpy(s->tx + s->tx_len, text, n);
     s->tx_len += n;
-    if (s->tx_pos == 0 && s->next_tx_cycle == 0) s->next_tx_cycle = s->avr->cycle + UART_CYCLES_PER_BYTE;
+    if (s->tx_pos == 0 && s->next_tx_cycle == 0)
+        s->next_tx_cycle = s->avr->cycle + UART_CYCLES_PER_BYTE;
 }
 static void enqueue_line(Sim *s, const char *line) {
     enqueue_raw(s, line);
@@ -255,8 +275,6 @@ static void run_path(Sim *s, const char *label, const char *gcode, int moves,
     if (!wait_token_from(s, mark, "echo:PATH_DONE", timeout_ms)) {
         char msg[120]; snprintf(msg,sizeof(msg),"%s timeout waiting PATH_DONE",label); fail(s,msg);
     }
-    /* M971 can be deferred behind M400. Wait for the line terminator field,
-       not merely the PERF prefix, so the parser never inspects a partial UART line. */
     if (!wait_token_from(s, mark, "health=", 1500)) {
         char msg[120]; snprintf(msg,sizeof(msg),"%s timeout waiting complete PERF",label); fail(s,msg);
     }
@@ -299,7 +317,7 @@ static void attach_hardware(Sim *s) {
         avr_irq_register_notify(pin_irq(s->avr, DIR_PIN[a]), pin_hook, &s->hook[a][1]);
         avr_irq_register_notify(pin_irq(s->avr, EN_PIN[a]), pin_hook, &s->hook[a][2]);
         s->end_irq[a] = pin_irq(s->avr, END_PIN[a]);
-        s->motor[a].endstop_triggered = true; /* force initial transition */
+        s->motor[a].endstop_triggered = true;
         drive_endstop(s,a);
     }
 
@@ -317,9 +335,7 @@ static void attach_hardware(Sim *s) {
 static void check_electrical(Sim *s) {
     for (int a=0;a<AXES;++a) {
         if (s->motor[a].disabled_steps) fail(s,"step pulse occurred while A4988 disabled");
-        /* STEP_PULSE_TICKS=6 at Timer1 2 MHz => nominal 48 CPU cycles = 3 us. */
         if (s->motor[a].min_pulse_cycles && s->motor[a].min_pulse_cycles < 40) fail(s,"STEP pulse too short for A4988 model");
-        /* A4988 direction setup spec is sub-microsecond; require >=4 cycles (250 ns). */
         if (s->motor[a].min_dir_setup_cycles && s->motor[a].min_dir_setup_cycles < 4) fail(s,"DIR changed too close to STEP edge");
         printf("HIL MOTOR %c rises=%llu pos=%lld min_pulse_cycles=%llu min_spacing_cycles=%llu min_dir_setup=%llu\n",
                'A'+a,(unsigned long long)s->motor[a].rises,(long long)s->motor[a].pos,
@@ -327,6 +343,9 @@ static void check_electrical(Sim *s) {
                (unsigned long long)s->motor[a].min_spacing_cycles,
                (unsigned long long)s->motor[a].min_dir_setup_cycles);
     }
+    printf("HIL UART xon=%d xon_events=%u xoff_events=%u tx_pos=%zu tx_len=%zu pending=%zu\n",
+           s->uart_xon ? 1 : 0, s->uart_xon_events, s->uart_xoff_events,
+           s->tx_pos, s->tx_len, uart_pending_bytes(s));
 }
 
 int main(int argc, char **argv) {
@@ -359,7 +378,6 @@ int main(int argc, char **argv) {
     run_path(&s,"45-move-real-regression",PATH45,45,0,0,120,15000);
     run_path(&s,"short-segment-torture",SHORT,53,0,0,120,12000);
 
-    /* Reversal / high-feed junction stress. */
     const char *rev=
       "G1 X0 Y0 Z120 F10800\nG1 X30 Y0\nG1 X-30 Y0\nG1 X30 Y0\nG1 X-30 Y0\nG1 X0 Y0\n"
       "G1 X0 Y30\nG1 X0 Y-30\nG1 X0 Y30\nG1 X0 Y-30\nG1 X0 Y0\n";
