@@ -7,6 +7,7 @@
 #undef main
 
 #define PROFILE_COUNT 8
+#define AVR_DATA_SEGMENT_BASE 0x00800000UL
 
 typedef struct {
     const char *needle;
@@ -38,19 +39,15 @@ static uint16_t avr_sp(avr_t *avr) {
 }
 
 static void resolve_profiles(const elf_firmware_t *fw) {
-    /* Pick one matching text symbol for each profiler entry. */
     for (uint32_t i=0;i<fw->symbolcount;++i) {
         const avr_symbol_t *sym=fw->symbol[i];
-        if (!sym || sym->addr >= AVR_SEGMENT_OFFSET_DATA) continue;
+        if (!sym || sym->addr >= AVR_DATA_SEGMENT_BASE) continue;
         for (int p=0;p<PROFILE_COUNT;++p) {
             if (!profiles[p].sym && strstr(sym->symbol, profiles[p].needle))
                 profiles[p].sym=sym;
         }
     }
 
-    /* Old simavr does not expose ELF symbol sizes. Infer a conservative code
-       range from the next flash symbol address. Inclusive call timing is based
-       on stack restoration and therefore does not depend on this inferred end. */
     for (int p=0;p<PROFILE_COUNT;++p) {
         CycleProfile *pr=&profiles[p];
         if (!pr->sym) {
@@ -61,7 +58,7 @@ static void resolve_profiles(const elf_firmware_t *fw) {
         uint32_t next=0xffffffffu;
         for (uint32_t i=0;i<fw->symbolcount;++i) {
             const avr_symbol_t *s=fw->symbol[i];
-            if (!s || s->addr >= AVR_SEGMENT_OFFSET_DATA) continue;
+            if (!s || s->addr >= AVR_DATA_SEGMENT_BASE) continue;
             if (s->addr > pr->start_addr && s->addr < next) next=s->addr;
         }
         pr->end_addr=(next==0xffffffffu)?(pr->start_addr+2u):next;
