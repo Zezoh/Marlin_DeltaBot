@@ -5,26 +5,21 @@ namespace deltacore {
 Dda3Axis::Dda3Axis()
   : error_{0, 0, 0}, dividend_{0, 0, 0}, divisor_(0), total_events_(0), completed_events_(0) {}
 
-bool Dda3Axis::begin(const uint32_t steps[AXIS_COUNT]) {
+bool Dda3Axis::begin(const uint32_t steps[AXIS_COUNT], const uint8_t smoothing_level) {
   uint32_t max_steps = steps[A_AXIS];
   if (steps[B_AXIS] > max_steps) max_steps = steps[B_AXIS];
   if (steps[C_AXIS] > max_steps) max_steps = steps[C_AXIS];
+  if (!max_steps || smoothing_level > 3) {
+    total_events_ = completed_events_ = 0;
+    return false;
+  }
+  if (max_steps > (0x3FFFFFFFUL >> smoothing_level)) {
+    total_events_ = completed_events_ = 0;
+    return false;
+  }
 
-  total_events_ = max_steps;
+  total_events_ = max_steps << smoothing_level;
   completed_events_ = 0;
-  if (!total_events_) {
-    divisor_ = 0;
-    error_[0] = error_[1] = error_[2] = 0;
-    dividend_[0] = dividend_[1] = dividend_[2] = 0;
-    return false;
-  }
-
-  // Doubling count/dividends must remain inside signed 32-bit arithmetic.
-  if (total_events_ > 0x3FFFFFFFUL) {
-    total_events_ = 0;
-    return false;
-  }
-
   divisor_ = total_events_ << 1;
   for (uint8_t axis = 0; axis < AXIS_COUNT; ++axis) {
     error_[axis] = -int32_t(total_events_);
@@ -36,7 +31,6 @@ bool Dda3Axis::begin(const uint32_t steps[AXIS_COUNT]) {
 StepMask Dda3Axis::next() {
   StepMask result = { 0 };
   if (!active()) return result;
-
   for (uint8_t axis = 0; axis < AXIS_COUNT; ++axis) {
     error_[axis] += int32_t(dividend_[axis]);
     if (error_[axis] >= 0) {
@@ -44,7 +38,6 @@ StepMask Dda3Axis::next() {
       error_[axis] -= int32_t(divisor_);
     }
   }
-
   ++completed_events_;
   return result;
 }
