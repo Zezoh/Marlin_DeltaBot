@@ -1,0 +1,23 @@
+name: Apply DeltaCore v0.5.5
+on:
+  push:
+    branches:
+      - codex/deltacore-motion-baseline-v0.1
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[v0.5.5-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/deltacore-motion-baseline-v0.1
+          fetch-depth: 0
+      - run: python3 tools/apply_v055.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add DeltaCore
+          git commit -m "DeltaCore v0.5.5: fix tiny-tail fault and underrun cascade [v0.5.5-applied]"
+          git push origin HEAD:codex/deltacore-motion-baseline-v0.1
