@@ -32,7 +32,7 @@ static bool wait_complete_perf_v2(Sim *s, size_t from, uint32_t timeout_ms) {
 static bool send_line_acked_v2(Sim *s, const char *line, uint32_t timeout_ms) {
     const size_t mark = s->out_len;
     enqueue_line(s, line);
-    return wait_token_from(s, mark, "ok\n", timeout_ms);
+    return wait_token_from(s, mark, "ok\r\n", timeout_ms);
 }
 
 static bool send_gcode_acked_v2(Sim *s, const char *gcode, const char *label) {
