@@ -11,7 +11,7 @@ namespace deltacore {
 StepperEngine *StepperEngine::instance_ = nullptr;
 
 StepperEngine::StepperEngine()
-  : queue_(nullptr), dda_(), current_block_{{0,0,0},0,0}, mode_(MODE_IDLE),
+  : queue_(nullptr), dda_(), current_block_{{0,0,0},0,0,0}, mode_(MODE_IDLE),
     block_active_(false), motors_enabled_(false), fault_(FAULT_NONE),
     motor_position_steps_{0,0,0}, completed_step_events_(0),
     step_out_{nullptr,nullptr,nullptr}, dir_out_{nullptr,nullptr,nullptr},
@@ -32,12 +32,10 @@ void StepperEngine::configureFastPins() {
     pinMode(hwcfg::DIR_PINS[axis], OUTPUT);
     pinMode(hwcfg::ENABLE_PINS[axis], OUTPUT);
     pinMode(hwcfg::MAX_ENDSTOP_PINS[axis], INPUT_PULLUP);
-
     step_mask_[axis] = digitalPinToBitMask(hwcfg::STEP_PINS[axis]);
     dir_mask_[axis] = digitalPinToBitMask(hwcfg::DIR_PINS[axis]);
     enable_mask_[axis] = digitalPinToBitMask(hwcfg::ENABLE_PINS[axis]);
     endstop_mask_[axis] = digitalPinToBitMask(hwcfg::MAX_ENDSTOP_PINS[axis]);
-
     step_out_[axis] = portOutputRegister(digitalPinToPort(hwcfg::STEP_PINS[axis]));
     dir_out_[axis] = portOutputRegister(digitalPinToPort(hwcfg::DIR_PINS[axis]));
     enable_out_[axis] = portOutputRegister(digitalPinToPort(hwcfg::ENABLE_PINS[axis]));
@@ -51,10 +49,9 @@ void StepperEngine::begin(MotionQueue &queue) {
   configureFastPins();
   allStepsInactive();
   setEnableFast(false);
-
   noInterrupts();
   TCCR1A = 0;
-  TCCR1B = _BV(WGM12) | _BV(CS11); // CTC, prescaler /8 => 2 MHz
+  TCCR1B = _BV(WGM12) | _BV(CS11);
   TCNT1 = 0;
   OCR1A = cfg::STARTUP_EVENT_TICKS;
   OCR1B = cfg::STEP_PULSE_TICKS;
@@ -67,12 +64,10 @@ void StepperEngine::writeStep(const uint8_t axis, const bool active) {
   const bool level = active ? !hwcfg::STEP_INVERTING[axis] : hwcfg::STEP_INVERTING[axis];
   writeFast(step_out_[axis], step_mask_[axis], level);
 }
-
 void StepperEngine::allStepsInactive() {
   for (uint8_t axis = 0; axis < 3; ++axis) writeStep(axis, false);
   active_pulse_axes_ = 0;
 }
-
 void StepperEngine::applyDirectionBits(const uint8_t positive_bits) {
   for (uint8_t axis = 0; axis < 3; ++axis) {
     const bool positive = positive_bits & uint8_t(1U << axis);
@@ -80,7 +75,6 @@ void StepperEngine::applyDirectionBits(const uint8_t positive_bits) {
     writeFast(dir_out_[axis], dir_mask_[axis], level);
   }
 }
-
 void StepperEngine::setEnableFast(const bool enabled) {
   for (uint8_t axis = 0; axis < 3; ++axis) {
     const bool level = enabled ? hwcfg::ENABLE_ACTIVE_HIGH[axis] : !hwcfg::ENABLE_ACTIVE_HIGH[axis];
@@ -88,27 +82,14 @@ void StepperEngine::setEnableFast(const bool enabled) {
   }
   motors_enabled_ = enabled;
 }
-
-void StepperEngine::enableMotors() {
-  noInterrupts();
-  setEnableFast(true);
-  interrupts();
-}
-
-void StepperEngine::disableMotors() {
-  if (!idle()) return;
-  noInterrupts();
-  setEnableFast(false);
-  interrupts();
-}
+void StepperEngine::enableMotors() { noInterrupts(); setEnableFast(true); interrupts(); }
+void StepperEngine::disableMotors() { if (!idle()) return; noInterrupts(); setEnableFast(false); interrupts(); }
 
 bool StepperEngine::endstopTriggered(const uint8_t axis) const {
   if (axis >= 3) return false;
   const bool raw_high = (*endstop_in_[axis] & endstop_mask_[axis]) != 0;
-  // Match Marlin semantics: triggered when READ(pin) != ENDSTOP_INVERTING.
   return raw_high != hwcfg::MAX_ENDSTOP_INVERTING[axis];
 }
-
 uint8_t StepperEngine::endstopMask() const {
   uint8_t mask = 0;
   for (uint8_t axis = 0; axis < 3; ++axis)
@@ -122,15 +103,21 @@ void StepperEngine::startTimer(const uint16_t first_ticks) {
   TIFR1 = _BV(OCF1A) | _BV(OCF1B);
   TIMSK1 = _BV(OCIE1A);
 }
+void StepperEngine::stopTimerFromISR() { TIMSK1 = 0; allStepsInactive(); }
 
-void StepperEngine::stopTimerFromISR() {
-  TIMSK1 = 0;
-  allStepsInactive();
+uint16_t StepperEngine::effectiveInterval(const MotorBlock &block) const {
+  uint8_t level = block.smoothing_level;
+  if (level > cfg::MAX_SMOOTHING_LEVEL) level = cfg::MAX_SMOOTHING_LEVEL;
+  uint32_t ticks = block.interval_ticks;
+  if (level) ticks = (ticks + (uint32_t(1U) << (level - 1U))) >> level;
+  if (ticks < cfg::MIN_EVENT_INTERVAL_TICKS) ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
+  if (ticks > cfg::MAX_EVENT_INTERVAL_TICKS) ticks = cfg::MAX_EVENT_INTERVAL_TICKS;
+  return uint16_t(ticks);
 }
 
 bool StepperEngine::loadNextMotionBlock() {
   if (!queue_ || !queue_->popFromISR(current_block_)) return false;
-  if (!dda_.begin(current_block_.steps)) return false;
+  if (!dda_.begin(current_block_.steps, current_block_.smoothing_level)) return false;
   block_active_ = true;
   return true;
 }
@@ -147,13 +134,8 @@ void StepperEngine::kickMotion() {
   interrupts();
 }
 
-bool StepperEngine::motionBusy() const {
-  return mode_ == MODE_MOTION || block_active_ || (queue_ && !queue_->empty());
-}
-
-bool StepperEngine::idle() const {
-  return mode_ == MODE_IDLE && !block_active_ && (!queue_ || queue_->empty());
-}
+bool StepperEngine::motionBusy() const { return mode_ == MODE_MOTION || block_active_ || (queue_ && !queue_->empty()); }
+bool StepperEngine::idle() const { return mode_ == MODE_IDLE && !block_active_ && (!queue_ || queue_->empty()); }
 
 uint16_t StepperEngine::intervalForTowerSpeed(const float mm_s) const {
   float rate = mm_s * cfg::STEPS_PER_MM;
@@ -166,52 +148,34 @@ uint16_t StepperEngine::intervalForTowerSpeed(const float mm_s) const {
 
 bool StepperEngine::startHomeSeek(const bool slow) {
   if (!idle() || fault_ != FAULT_NONE) return false;
-  noInterrupts();
-  queue_->clearUnsafe();
-  setEnableFast(true);
-  home_kind_ = HOME_KIND_SEEK;
-  home_result_ = HOME_RESULT_RUNNING;
-  home_active_axes_ = 0x07;
+  noInterrupts(); queue_->clearUnsafe(); setEnableFast(true);
+  home_kind_ = HOME_KIND_SEEK; home_result_ = HOME_RESULT_RUNNING; home_active_axes_ = 0x07;
   home_events_done_ = 0;
   home_event_limit_ = uint32_t(cfg::HOME_MAX_TRAVEL_MM * cfg::STEPS_PER_MM + 0.5f);
   home_interval_ticks_ = intervalForTowerSpeed(slow ? cfg::HOME_SLOW_MM_S : cfg::HOME_FAST_MM_S);
-  applyDirectionBits(0x07); // positive tower direction = toward MAX endstops
-  mode_ = MODE_HOME;
-  startTimer(cfg::STARTUP_EVENT_TICKS);
-  interrupts();
+  applyDirectionBits(0x07); mode_ = MODE_HOME; startTimer(cfg::STARTUP_EVENT_TICKS); interrupts();
   return true;
 }
 
 bool StepperEngine::startHomeBackoff() {
   if (!idle() || fault_ != FAULT_NONE) return false;
-  noInterrupts();
-  setEnableFast(true);
-  home_kind_ = HOME_KIND_BACKOFF;
-  home_result_ = HOME_RESULT_RUNNING;
-  home_active_axes_ = 0x07;
+  noInterrupts(); setEnableFast(true);
+  home_kind_ = HOME_KIND_BACKOFF; home_result_ = HOME_RESULT_RUNNING; home_active_axes_ = 0x07;
   home_events_done_ = 0;
   home_event_limit_ = uint32_t(cfg::HOME_BACKOFF_MM * cfg::STEPS_PER_MM + 0.5f);
   home_interval_ticks_ = intervalForTowerSpeed(15.0f);
-  applyDirectionBits(0x00); // negative = away from MAX endstops
-  mode_ = MODE_HOME;
-  startTimer(cfg::STARTUP_EVENT_TICKS);
-  interrupts();
+  applyDirectionBits(0x00); mode_ = MODE_HOME; startTimer(cfg::STARTUP_EVENT_TICKS); interrupts();
   return true;
 }
 
-void StepperEngine::clearHomeResult() {
-  noInterrupts();
-  if (home_result_ != HOME_RESULT_RUNNING) home_result_ = HOME_RESULT_NONE;
-  interrupts();
-}
+void StepperEngine::clearHomeResult() { noInterrupts(); if (home_result_ != HOME_RESULT_RUNNING) home_result_ = HOME_RESULT_NONE; interrupts(); }
 
 void StepperEngine::pulseAxes(const uint8_t axes, const bool positive) {
   uint8_t pulse = 0;
   for (uint8_t axis = 0; axis < 3; ++axis) {
     const uint8_t bit = uint8_t(1U << axis);
     if (!(axes & bit)) continue;
-    writeStep(axis, true);
-    pulse |= bit;
+    writeStep(axis, true); pulse |= bit;
     motor_position_steps_[axis] += positive ? 1 : -1;
   }
   active_pulse_axes_ = pulse;
@@ -226,14 +190,10 @@ void StepperEngine::pulseAxes(const uint8_t axes, const bool positive) {
 
 void StepperEngine::motionISR() {
   if (!block_active_) {
-    if (!loadNextMotionBlock()) {
-      mode_ = MODE_IDLE;
-      stopTimerFromISR();
-      return;
-    }
+    if (!loadNextMotionBlock()) { mode_ = MODE_IDLE; stopTimerFromISR(); return; }
     applyDirectionBits(current_block_.direction_bits);
-    OCR1A = current_block_.interval_ticks;
-    return; // direction setup interval before first pulse
+    OCR1A = effectiveInterval(current_block_);
+    return;
   }
 
   const StepMask sm = dda_.next();
@@ -241,8 +201,7 @@ void StepperEngine::motionISR() {
   for (uint8_t axis = 0; axis < 3; ++axis) {
     const uint8_t bit = uint8_t(1U << axis);
     if (!(sm.bits & bit)) continue;
-    writeStep(axis, true);
-    pulse |= bit;
+    writeStep(axis, true); pulse |= bit;
     const bool positive = current_block_.direction_bits & bit;
     motor_position_steps_[axis] += positive ? 1 : -1;
   }
@@ -260,26 +219,26 @@ void StepperEngine::motionISR() {
   if (!dda_.active()) {
     block_active_ = false;
     MotorBlock next;
-    if (queue_ && queue_->popFromISR(next) && dda_.begin(next.steps)) {
+    if (queue_ && queue_->popFromISR(next) && dda_.begin(next.steps, next.smoothing_level)) {
       current_block_ = next;
       block_active_ = true;
-      pending_direction_bits_ = next.direction_bits;
-      direction_pending_ = true; // applied only after current STEP pulse goes inactive
-      OCR1A = next.interval_ticks;
+      if (active_pulse_axes_) {
+        pending_direction_bits_ = next.direction_bits;
+        direction_pending_ = true;
+      }
+      else {
+        applyDirectionBits(next.direction_bits);
+        direction_pending_ = false;
+      }
+      OCR1A = effectiveInterval(next);
     }
-    else {
-      OCR1A = cfg::STARTUP_EVENT_TICKS;
-    }
+    else OCR1A = cfg::STARTUP_EVENT_TICKS;
   }
-  else {
-    OCR1A = current_block_.interval_ticks;
-  }
+  else OCR1A = effectiveInterval(current_block_);
 }
 
 void StepperEngine::finishHomeFromISR(const bool success) {
-  stopTimerFromISR();
-  mode_ = MODE_IDLE;
-  home_kind_ = HOME_KIND_NONE;
+  stopTimerFromISR(); mode_ = MODE_IDLE; home_kind_ = HOME_KIND_NONE;
   home_result_ = success ? HOME_RESULT_DONE : HOME_RESULT_FAILED;
 }
 
@@ -291,38 +250,17 @@ void StepperEngine::homeISR() {
       if ((remaining & bit) && endstopTriggered(axis)) remaining &= uint8_t(~bit);
     }
     home_active_axes_ = remaining;
-
-    if (!remaining) {
-      finishHomeFromISR(true);
-      return;
-    }
+    if (!remaining) { finishHomeFromISR(true); return; }
     if (home_events_done_ >= home_event_limit_) {
-      fault_ = FAULT_HOME_TRAVEL;
-      setEnableFast(false);
-      finishHomeFromISR(false);
-      return;
+      fault_ = FAULT_HOME_TRAVEL; setEnableFast(false); finishHomeFromISR(false); return;
     }
-
-    pulseAxes(remaining, true);
-    ++home_events_done_;
-    OCR1A = home_interval_ticks_;
-    return;
+    pulseAxes(remaining, true); ++home_events_done_; OCR1A = home_interval_ticks_; return;
   }
-
   if (home_kind_ == HOME_KIND_BACKOFF) {
-    if (home_events_done_ >= home_event_limit_) {
-      finishHomeFromISR(true);
-      return;
-    }
-    pulseAxes(0x07, false);
-    ++home_events_done_;
-    OCR1A = home_interval_ticks_;
-    return;
+    if (home_events_done_ >= home_event_limit_) { finishHomeFromISR(true); return; }
+    pulseAxes(0x07, false); ++home_events_done_; OCR1A = home_interval_ticks_; return;
   }
-
-  fault_ = FAULT_INTERNAL;
-  setEnableFast(false);
-  finishHomeFromISR(false);
+  fault_ = FAULT_INTERNAL; setEnableFast(false); finishHomeFromISR(false);
 }
 
 void StepperEngine::onCompareA() {
@@ -336,55 +274,29 @@ void StepperEngine::onCompareB() {
   for (uint8_t axis = 0; axis < 3; ++axis)
     if (pulse & uint8_t(1U << axis)) writeStep(axis, false);
   active_pulse_axes_ = 0;
-
-  if (direction_pending_) {
-    applyDirectionBits(pending_direction_bits_);
-    direction_pending_ = false;
-  }
+  if (direction_pending_) { applyDirectionBits(pending_direction_bits_); direction_pending_ = false; }
   TIMSK1 &= uint8_t(~_BV(OCIE1B));
 }
 
 void StepperEngine::emergencyStop(const FaultCode code) {
-  noInterrupts();
-  TIMSK1 = 0;
-  allStepsInactive();
+  noInterrupts(); TIMSK1 = 0; allStepsInactive();
   if (queue_) queue_->clearUnsafe();
-  block_active_ = false;
-  mode_ = MODE_IDLE;
-  home_kind_ = HOME_KIND_NONE;
-  home_result_ = HOME_RESULT_FAILED;
-  fault_ = code;
-  setEnableFast(false);
-  interrupts();
+  block_active_ = false; mode_ = MODE_IDLE; home_kind_ = HOME_KIND_NONE;
+  home_result_ = HOME_RESULT_FAILED; fault_ = code; setEnableFast(false); interrupts();
 }
 
 bool StepperEngine::clearFault() {
   if (!idle()) return false;
-  noInterrupts();
-  fault_ = FAULT_NONE;
-  home_result_ = HOME_RESULT_NONE;
-  interrupts();
-  return true;
+  noInterrupts(); fault_ = FAULT_NONE; home_result_ = HOME_RESULT_NONE; interrupts(); return true;
 }
-
 void StepperEngine::setMotorPositionSteps(const int32_t steps[3]) {
-  noInterrupts();
-  for (uint8_t axis = 0; axis < 3; ++axis) motor_position_steps_[axis] = steps[axis];
-  interrupts();
+  noInterrupts(); for (uint8_t axis = 0; axis < 3; ++axis) motor_position_steps_[axis] = steps[axis]; interrupts();
 }
-
 void StepperEngine::getMotorPositionSteps(int32_t steps[3]) const {
-  noInterrupts();
-  for (uint8_t axis = 0; axis < 3; ++axis) steps[axis] = motor_position_steps_[axis];
-  interrupts();
+  noInterrupts(); for (uint8_t axis = 0; axis < 3; ++axis) steps[axis] = motor_position_steps_[axis]; interrupts();
 }
 
 } // namespace deltacore
 
-ISR(TIMER1_COMPA_vect) {
-  if (deltacore::StepperEngine::instance()) deltacore::StepperEngine::instance()->onCompareA();
-}
-
-ISR(TIMER1_COMPB_vect) {
-  if (deltacore::StepperEngine::instance()) deltacore::StepperEngine::instance()->onCompareB();
-}
+ISR(TIMER1_COMPA_vect) { if (deltacore::StepperEngine::instance()) deltacore::StepperEngine::instance()->onCompareA(); }
+ISR(TIMER1_COMPB_vect) { if (deltacore::StepperEngine::instance()) deltacore::StepperEngine::instance()->onCompareB(); }
