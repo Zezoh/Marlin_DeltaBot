@@ -50,7 +50,6 @@ public:
   float jerkLimit() const { return cfg::DEFAULT_JERK_MM_S3; }
   bool setAcceleration(float mm_s2);
 
-  // -1 = adaptive auto, 0 = off, 1 = x2 phase timing, 2 = x4.
   bool setSmoothingMode(int8_t mode);
   int8_t smoothingMode() const { return smoothing_mode_; }
 
@@ -81,6 +80,8 @@ private:
   uint8_t generating_index_;
   float generated_time_s_;
   float generated_distance_mm_;
+  float generated_tower_mm_[3];
+  float segment_length_limit_mm_;
   int32_t generated_motor_steps_[3];
   int32_t final_motor_steps_[3];
   JerkProfile profile_;
