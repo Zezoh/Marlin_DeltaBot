@@ -1,4 +1,4 @@
-# DeltaCore v0.5.4 final clean-tip verification
+# DeltaCore v0.5.4 final clean-tip verification (admission fixed)
 name: DeltaCore AVR Build
 
 on:
