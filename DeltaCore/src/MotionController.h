@@ -47,6 +47,11 @@ public:
   float feedrate() const { return default_feed_mm_s_; }
   float acceleration() const { return acceleration_mm_s2_; }
   bool setAcceleration(float mm_s2);
+
+  // -1 = adaptive auto, 0 = off, 1 = x2 virtual timing, 2 = x4.
+  bool setSmoothingMode(int8_t mode);
+  int8_t smoothingMode() const { return smoothing_mode_; }
+
   ControllerEvent consumeEvent();
   RequestResult lastRequestError() const { return last_request_error_; }
 
@@ -79,6 +84,7 @@ private:
 
   float acceleration_mm_s2_;
   float default_feed_mm_s_;
+  int8_t smoothing_mode_;
 
   bool startBatch();
   bool initGeneratingMove(uint8_t index);
