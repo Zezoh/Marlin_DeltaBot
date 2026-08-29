@@ -249,7 +249,7 @@ static void printPerformance(const bool path_summary) {
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.5.1 motion settings:"));
+  Serial.println(F("DeltaCore v0.5.4 motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
   Serial.print(F("  jerk_limit=")); Serial.println(motion.jerkLimit(), 0);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
@@ -357,9 +357,9 @@ static void processCommand(char *raw_line, bool count_rx = true) {
     Serial.println(F("echo:runtime motion defaults restored")); ack(); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.5.3 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
+    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.5.4 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
     Serial.print(bootSessionId());
-    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+FAST_DELTA_GEN+INTEGER_DDA+EXACT_SEGMENT_TIME+ROLLING_COMMIT+SERIAL_FAIR DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
+    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+FAST_DELTA_GEN+INTEGER_DDA+EXACT_SEGMENT_TIME+ROLLING_COMMIT+SERIAL_FAIR+ADAPTIVE_REFILL DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
     ack(); return;
   }
 
@@ -439,13 +439,12 @@ static void serviceDeferredCommands() {
 }
 
 static void serviceSerial() {
-  // Do not drain the whole UART in one main-loop pass. Dense G-code must
-  // interleave with trajectory production so input cannot outrun the planner.
-  const uint8_t ingress_high_water = uint8_t(cfg::PATH_QUEUE_SIZE + cfg::STREAM_PENDING_SIZE - 4U);
+  // Drain UART in small bounded slices, but never stop reading merely because
+  // the motion planner is full: AVR UART has no RTS/CTS, so such "backpressure"
+  // only overflows the hardware RX ring while the host continues transmitting.
   uint8_t completed_lines = 0;
   uint8_t consumed_bytes = 0;
   while (Serial.available() > 0 && completed_lines < 2U && consumed_bytes < 96U) {
-    if (!discard_line && line_length == 0 && motion.queuedMoves() >= ingress_high_water) return;
     const char c = char(Serial.read());
     ++consumed_bytes;
     if (c == '\r') continue;
@@ -501,9 +500,9 @@ void setup() {
   motion.begin();
 
   Serial.println();
-  Serial.println(F("DeltaCore 0.5.3 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.5.4 - Mega2560 / MKS MINI v2.0"));
   printResetCause();
-  Serial.println(F("Motion: rolling-commit jerk look-ahead + curvature-bounded Delta segments"));
+  Serial.println(F("Motion: rolling-commit jerk look-ahead + adaptive producer + curvature-bounded Delta segments"));
   Serial.println(F("Stepper: deterministic integer A/B/C DDA + exact segment tick budget"));
   Serial.println(F("Scheduler: prefill + automatic Timer1 kick recovery after queue refill"));
   Serial.println(F("Serial: barrier-aware deferred command queue; M105/M112 remain immediate"));

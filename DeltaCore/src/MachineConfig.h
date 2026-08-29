@@ -48,7 +48,7 @@ constexpr uint16_t SMOOTH_L2_INTERVAL_TICKS = 5000;
 // are stored compactly as XYZ+feed requests, avoiding another large PathMove
 // array while allowing a continuous stream across planning windows.
 constexpr uint8_t PATH_QUEUE_SIZE = 16;
-constexpr uint8_t STREAM_PENDING_SIZE = 32;
+constexpr uint8_t STREAM_PENDING_SIZE = 64;
 constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
 
 constexpr float HOME_FAST_MM_S = 35.0f;
@@ -69,6 +69,10 @@ constexpr uint16_t TIMER_ISR_GUARD_TICKS = 24;
 
 constexpr uint8_t MOTION_QUEUE_SIZE = 32;
 constexpr uint8_t MOTION_START_PREFILL_BLOCKS = 24;
+constexpr uint8_t MOTION_REFILL_LOW_WATER = 14;
+constexpr uint8_t MOTION_REFILL_TARGET = 28;
+constexpr uint8_t MOTION_REFILL_MAX_BURST = 8;
+constexpr uint16_t MOTION_REFILL_BUDGET_US = 1800;
 constexpr uint8_t SERIAL_LINE_SIZE = 192;
 constexpr uint32_t DEBUG_HEARTBEAT_MS = 5000UL;
 

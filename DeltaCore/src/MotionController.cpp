@@ -385,18 +385,29 @@ void MotionController::service() {
     if (planner_.full() || streamClosed()) stream_active_ = true;
   }
 
-  if (stream_active_ && !generating_move_ && canCommitNextMove()) {
-    if (!startNextPlannedMove()) {
-      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
+  // Adaptive bounded producer. Normally generate one segment per pass for
+  // ingress fairness. If the motor reservoir falls below LOW_WATER, refill
+  // several blocks in the same pass (including move-boundary handoff) but
+  // never monopolize main-loop time beyond a strict microsecond budget.
+  const bool refill_urgent = queue_.count() < cfg::MOTION_REFILL_LOW_WATER;
+  const uint8_t burst_limit = refill_urgent ? cfg::MOTION_REFILL_MAX_BURST : 1U;
+  const uint32_t refill_started_us = micros();
+  uint8_t produced = 0;
+  while (produced < burst_limit && queue_.freeSlots() > 1U) {
+    if (!generating_move_) {
+      if (!(stream_active_ && canCommitNextMove())) break;
+      if (!startNextPlannedMove()) {
+        stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
+      }
     }
-  }
-
-  // Exactly one expensive Delta segment per pass. This preserves Serial RX
-  // fairness while the 32-block motor queue absorbs execution jitter.
-  if (generating_move_ && queue_.freeSlots() > 1U) {
     if (!generateOneSegment()) {
       stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
     }
+    ++produced;
+    if (queue_.count() >= cfg::MOTION_REFILL_TARGET) break;
+    if (uint32_t(micros() - refill_started_us) >= cfg::MOTION_REFILL_BUDGET_US) break;
+    // Once the motor queue is healthy, yield immediately to waiting RX.
+    if (queue_.count() >= cfg::MOTION_REFILL_LOW_WATER && Serial.available() > 0) break;
   }
 
   if (!motion_started_) {
