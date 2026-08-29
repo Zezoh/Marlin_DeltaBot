@@ -520,10 +520,11 @@ void setup() {
 
 void loop() {
   serviceSerial();
-  // Keep a prepared handoff published before compute-heavy trajectory work.
-  stepper.kickMotion();
+  // Prefetch is deliberately start-neutral. Only MotionController owns the
+  // IDLE->MOTION transition after its start/recovery reservoir invariant holds.
+  stepper.servicePrefetch();
   motion.service();
-  stepper.kickMotion();
+  stepper.servicePrefetch();
 
   // When the UART has been drained and the motor reservoir is low, spend one
   // additional main-loop slice on trajectory production. This cannot delay an

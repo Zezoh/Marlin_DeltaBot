@@ -255,8 +255,11 @@ static void run_path(Sim *s, const char *label, const char *gcode, int moves,
     if (!wait_token_from(s, mark, "echo:PATH_DONE", timeout_ms)) {
         char msg[120]; snprintf(msg,sizeof(msg),"%s timeout waiting PATH_DONE",label); fail(s,msg);
     }
-    /* M971 can be deferred behind M400; give it time to print. */
-    wait_token_from(s, mark, "PERF session=", 1000);
+    /* M971 can be deferred behind M400. Wait for the line terminator field,
+       not merely the PERF prefix, so the parser never inspects a partial UART line. */
+    if (!wait_token_from(s, mark, "health=", 1500)) {
+        char msg[120]; snprintf(msg,sizeof(msg),"%s timeout waiting complete PERF",label); fail(s,msg);
+    }
     check_no_errors(s, mark, label);
     check_target(s, x,y,z,label);
     check_perf_clean(s, mark, moves,label);
