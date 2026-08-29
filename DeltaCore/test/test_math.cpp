@@ -142,12 +142,57 @@ static void testKinematicsMetrics() {
   assert(err >= 0.0f && err < 0.1f);
 }
 
+static void validateCurvatureBound(const float start[3], const float target[3]) {
+  Kinematics kin;
+  float delta[3] = {target[0]-start[0], target[1]-start[1], target[2]-start[2]};
+  const float length = sqrtf(delta[0]*delta[0] + delta[1]*delta[1] + delta[2]*delta[2]);
+  assert(length > 0.0f);
+  float unit[3] = {delta[0]/length, delta[1]/length, delta[2]/length};
+  MotionMetrics metrics;
+  assert(kin.motionMetrics(start, unit, length, metrics));
+
+  float ds_limit = cfg::MAX_SEGMENT_MM;
+  if (metrics.max_curvature > 1.0e-7f) {
+    const float chord_ds = sqrtf((8.0f * cfg::MAX_TOWER_CHORD_ERROR_MM) / metrics.max_curvature) * 0.70f;
+    if (chord_ds < ds_limit) ds_limit = chord_ds;
+  }
+  if (ds_limit < 0.05f) ds_limit = 0.05f;
+
+  const uint16_t pieces = uint16_t(ceilf(length / ds_limit));
+  for (uint16_t i = 0; i < pieces; ++i) {
+    const float a = float(i) / float(pieces);
+    const float b = float(i + 1U) / float(pieces);
+    float p0[3], p1[3];
+    for (uint8_t axis = 0; axis < 3; ++axis) {
+      p0[axis] = start[axis] + delta[axis] * a;
+      p1[axis] = start[axis] + delta[axis] * b;
+    }
+    float error = 0.0f;
+    assert(kin.towerChordError(p0, p1, error));
+    assert(error <= cfg::MAX_TOWER_CHORD_ERROR_MM + 0.00001f);
+  }
+}
+
+static void testFastGeneratorChordBound() {
+  const float critical0[3] = {0,0,225}, critical1[3] = {40,0,120};
+  const float edge0[3] = {0,0,120}, edge1[3] = {70,0,120};
+  const float diag0[3] = {0,0,120}, diag1[3] = {40,40,120};
+  const float edgeDiag0[3] = {70,0,120}, edgeDiag1[3] = {0,70,120};
+  const float sweep0[3] = {-70,0,120}, sweep1[3] = {70,0,120};
+  validateCurvatureBound(critical0, critical1);
+  validateCurvatureBound(edge0, edge1);
+  validateCurvatureBound(diag0, diag1);
+  validateCurvatureBound(edgeDiag0, edgeDiag1);
+  validateCurvatureBound(sweep0, sweep1);
+}
+
 int main() {
   for (uint8_t l = 0; l <= 3; ++l) testLegacyDdaReference(l);
   testPhaseContinuity();
   testJerkProfile();
   testPlanner();
   testKinematicsMetrics();
-  printf("PASS v0.4.4 fast generator + compact phase continuation + Delta metrics\n");
+  testFastGeneratorChordBound();
+  printf("PASS v0.4.4 fast generator + compact phase continuation + conservative Delta chord bound\n");
   return 0;
 }
