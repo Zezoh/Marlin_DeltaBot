@@ -27,7 +27,8 @@ public:
 
   void clear();
   bool enqueue(const float start[3], const float target[3], float feed_mm_s, float requested_accel_mm_s2);
-  bool plan();
+  bool plan(float first_entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S);
+  bool seedPrepared(const PathMove &move);
 
   uint8_t count() const { return count_; }
   bool empty() const { return count_ == 0; }

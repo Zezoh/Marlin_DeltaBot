@@ -91,20 +91,26 @@ float PathPlanner::junctionSpeed(const PathMove &prev, const PathMove &next) {
   return v;
 }
 
-bool PathPlanner::plan() {
+bool PathPlanner::plan(const float first_entry_speed_mm_s) {
   if (!count_) return false;
 
-  moves_[0].max_entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S;
-  moves_[0].entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S;
+  float first_entry = first_entry_speed_mm_s;
+  if (first_entry < cfg::MIN_PROFILE_SPEED_MM_S) first_entry = cfg::MIN_PROFILE_SPEED_MM_S;
+  if (first_entry > moves_[0].nominal_speed_mm_s) first_entry = moves_[0].nominal_speed_mm_s;
+  moves_[0].max_entry_speed_mm_s = first_entry;
+  moves_[0].entry_speed_mm_s = first_entry;
+
   for (uint8_t i = 1; i < count_; ++i) {
     moves_[i].max_entry_speed_mm_s = junctionSpeed(moves_[i - 1], moves_[i]);
     moves_[i].entry_speed_mm_s = moves_[i].max_entry_speed_mm_s;
   }
 
-  // Reverse pass: a move must be able to decelerate from its entry speed to
-  // the next junction using the configured acceleration AND jerk limits.
+  // Conservative tail: every finite planning window is feasible even if the
+  // stream stops after its last lookahead move. The last move is retained as
+  // an unexecuted sentinel when more input exists, so this cannot force an
+  // unsafe carry speed into the next window.
   float next_entry = cfg::MIN_PROFILE_SPEED_MM_S;
-  for (int16_t i = int16_t(count_) - 1; i >= 0; --i) {
+  for (int16_t i = int16_t(count_) - 1; i >= 1; --i) {
     PathMove &m = moves_[uint8_t(i)];
     const float max_from_decel = JerkProfile::maxReachableSpeed(
       next_entry, m.length_mm, m.nominal_speed_mm_s, m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
@@ -113,9 +119,9 @@ bool PathPlanner::plan() {
     next_entry = m.entry_speed_mm_s;
   }
 
-  // Forward pass: likewise, each junction speed must actually be reachable
-  // from the previous entry under the same jerk-limited transition model.
-  moves_[0].entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S;
+  // The first entry is a committed carry speed from the preceding window.
+  // It was computed against a stop-feasible sentinel, so do not rewrite it.
+  moves_[0].entry_speed_mm_s = first_entry;
   for (uint8_t i = 1; i < count_; ++i) {
     const PathMove &prev = moves_[i - 1];
     const float reachable = JerkProfile::maxReachableSpeed(
@@ -129,6 +135,13 @@ bool PathPlanner::plan() {
       ? moves_[i + 1U].entry_speed_mm_s
       : cfg::MIN_PROFILE_SPEED_MM_S;
   }
+  return true;
+}
+
+bool PathPlanner::seedPrepared(const PathMove &move) {
+  if (count_) return false;
+  moves_[0] = move;
+  count_ = 1;
   return true;
 }
 

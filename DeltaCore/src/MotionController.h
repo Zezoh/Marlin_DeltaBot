@@ -42,7 +42,7 @@ public:
   bool busy() const;
   bool moving() const { return batch_active_; }
   bool homing() const { return home_state_ != HOME_IDLE; }
-  uint8_t queuedMoves() const { return planner_.count(); }
+  uint8_t queuedMoves() const { return uint8_t(planner_.count() + pending_count_); }
   void currentPosition(float xyz[3]) const;
   void commandPosition(float xyz[3]) const;
   float feedrate() const { return default_feed_mm_s_; }
@@ -69,6 +69,7 @@ private:
   volatile ControllerEvent event_;
   RequestResult last_request_error_;
   float current_xyz_[3];
+  float command_xyz_[3];
   int32_t home_motor_steps_[3];
 
   bool batch_active_;
@@ -91,6 +92,18 @@ private:
   int8_t smoothing_mode_;
   bool interval_continuity_valid_;
   int32_t generated_interval_tail_q8_;
+
+  struct PendingMove { float target[3]; float feed_mm_s; };
+  PendingMove pending_[cfg::STREAM_PENDING_SIZE];
+  uint8_t pending_head_, pending_tail_, pending_count_;
+  uint8_t window_exec_count_;
+  bool final_window_;
+  float carry_entry_speed_mm_s_;
+
+  bool enqueuePending(const float target[3], float feed_mm_s);
+  bool dequeuePending(PendingMove &move);
+  void fillPlannerFromPending();
+  bool rollWindow();
 
   bool startBatch();
   bool initGeneratingMove(uint8_t index);

@@ -47,6 +47,7 @@ constexpr uint8_t MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT = 48;
 
 // Burst look-ahead queue. M400 / FLUSH starts it immediately.
 constexpr uint8_t PATH_QUEUE_SIZE = 16;
+constexpr uint8_t STREAM_PENDING_SIZE = 32;
 constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
 
 // Optional phase-event oversampling. Auto remains deliberately mild.
