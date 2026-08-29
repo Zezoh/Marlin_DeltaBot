@@ -1,5 +1,6 @@
 #include "MotionController.h"
 #include "MachineConfig.h"
+#include "PhaseStep3Axis.h"
 
 #include <Arduino.h>
 #include <math.h>
@@ -10,11 +11,10 @@ MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper, K
   : queue_(queue), stepper_(stepper), kinematics_(kinematics), planner_(planner),
     homed_(false), home_state_(HOME_IDLE), event_(EVENT_NONE), last_request_error_(REQUEST_OK),
     current_xyz_{0,0,0}, home_motor_steps_{0,0,0}, batch_active_(false), generation_complete_(false),
-    flush_requested_(false), last_enqueue_ms_(0), generating_index_(0), generated_distance_mm_(0),
-    generated_motor_steps_{0,0,0}, final_motor_steps_{0,0,0}, profile_peak_mm_s_(0),
-    profile_accel_distance_mm_(0), profile_decel_distance_mm_(0),
-    acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2), default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S),
-    smoothing_mode_(-1) {}
+    flush_requested_(false), phase_anchor_pending_(false), last_enqueue_ms_(0), generating_index_(0),
+    generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_motor_steps_{0,0,0},
+    final_motor_steps_{0,0,0}, profile_(), acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2),
+    default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S), smoothing_mode_(-1) {}
 
 void MotionController::begin() {
   homed_ = false;
@@ -22,6 +22,7 @@ void MotionController::begin() {
   batch_active_ = false;
   generation_complete_ = false;
   flush_requested_ = false;
+  phase_anchor_pending_ = false;
   smoothing_mode_ = -1;
   planner_.clear();
   event_ = EVENT_NONE;
@@ -122,122 +123,77 @@ void MotionController::flushMoves() {
   if (!planner_.empty() && !batch_active_) flush_requested_ = true;
 }
 
-float MotionController::smootherStep5(float u) {
-  if (u <= 0.0f) return 0.0f;
-  if (u >= 1.0f) return 1.0f;
-  return u*u*u * (u * (u * 6.0f - 15.0f) + 10.0f);
-}
-
 bool MotionController::initGeneratingMove(const uint8_t index) {
   if (index >= planner_.count()) return false;
   const PathMove &m = planner_.move(index);
+  generated_time_s_ = 0.0f;
   generated_distance_mm_ = 0.0f;
   if (!kinematics_.cartesianToSteps(m.start, generated_motor_steps_)) return false;
   if (!kinematics_.cartesianToSteps(m.target, final_motor_steps_)) return false;
-
-  const float a = m.accel_mm_s2;
-  const float ve = m.entry_speed_mm_s;
-  const float vx = m.exit_speed_mm_s;
-  float vn = m.nominal_speed_mm_s;
-  float da = (vn * vn - ve * ve) / (2.0f * a);
-  float dd = (vn * vn - vx * vx) / (2.0f * a);
-  if (da < 0.0f) da = 0.0f;
-  if (dd < 0.0f) dd = 0.0f;
-
-  if (da + dd > m.length_mm) {
-    const float peak_sq = 0.5f * (2.0f * a * m.length_mm + ve * ve + vx * vx);
-    vn = sqrtf(peak_sq > 0.0f ? peak_sq : 0.0f);
-    if (vn > m.nominal_speed_mm_s) vn = m.nominal_speed_mm_s;
-    da = (vn * vn - ve * ve) / (2.0f * a);
-    dd = (vn * vn - vx * vx) / (2.0f * a);
-    if (da < 0.0f) da = 0.0f;
-    if (dd < 0.0f) dd = 0.0f;
-  }
-
-  profile_peak_mm_s_ = vn;
-  profile_accel_distance_mm_ = da;
-  profile_decel_distance_mm_ = dd;
-  return true;
+  return profile_.configure(m.length_mm, m.entry_speed_mm_s, m.exit_speed_mm_s,
+                            m.nominal_speed_mm_s, m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
 }
 
-float MotionController::profileSpeed(const PathMove &m, const float distance_mm) const {
-  float v = profile_peak_mm_s_;
-  if (profile_accel_distance_mm_ > 0.00001f && distance_mm < profile_accel_distance_mm_) {
-    const float u = distance_mm / profile_accel_distance_mm_;
-    v = m.entry_speed_mm_s + (profile_peak_mm_s_ - m.entry_speed_mm_s) * smootherStep5(u);
-  }
-  const float decel_start = m.length_mm - profile_decel_distance_mm_;
-  if (profile_decel_distance_mm_ > 0.00001f && distance_mm > decel_start) {
-    const float u = (distance_mm - decel_start) / profile_decel_distance_mm_;
-    v = profile_peak_mm_s_ + (m.exit_speed_mm_s - profile_peak_mm_s_) * smootherStep5(u);
-  }
-  if (v < cfg::MIN_PROFILE_SPEED_MM_S) v = cfg::MIN_PROFILE_SPEED_MM_S;
-  if (v > m.nominal_speed_mm_s) v = m.nominal_speed_mm_s;
-  return v;
-}
+float MotionController::adaptiveSegmentDuration(const PathMove &m, const float time_s) const {
+  const float remaining_time = profile_.totalTime() - time_s;
+  if (remaining_time <= 0.0f) return 0.0f;
 
-float MotionController::adaptiveSegmentLength(const PathMove &m, const float distance_mm) const {
-  const float speed = profileSpeed(m, distance_mm);
-  float ds = speed / cfg::TARGET_SEGMENT_HZ;
-  if (ds < cfg::MIN_SEGMENT_MM) ds = cfg::MIN_SEGMENT_MM;
-
-  // Keep enough real master events in a slow block that endpoint rounding is a
-  // small perturbation. v0.3.2 no longer derives the timer frequency from this
-  // rounded event count; it is only a spatial/DDA granularity safeguard now.
-  if (speed <= cfg::LOW_SPEED_SEGMENT_THRESHOLD_MM_S) {
-    float estimated_master_steps_per_mm = m.max_tower_gain * cfg::STEPS_PER_MM;
-    if (estimated_master_steps_per_mm < 1.0f) estimated_master_steps_per_mm = 1.0f;
-    const float min_ds_for_steps =
-      float(cfg::MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT) / estimated_master_steps_per_mm;
-    if (ds < min_ds_for_steps) ds = min_ds_for_steps;
-  }
-
-  if (ds > cfg::MAX_SEGMENT_MM) ds = cfg::MAX_SEGMENT_MM;
-  const float remaining = m.length_mm - distance_mm;
-  if (ds > remaining) ds = remaining;
+  float dt = 1.0f / cfg::TARGET_SEGMENT_HZ;
+  if (dt > remaining_time) dt = remaining_time;
+  const JerkSample s0 = profile_.sample(time_s);
 
   const float p0[3] = {
-    m.start[0] + m.unit[0] * distance_mm,
-    m.start[1] + m.unit[1] * distance_mm,
-    m.start[2] + m.unit[2] * distance_mm
+    m.start[0] + m.unit[0] * s0.distance_mm,
+    m.start[1] + m.unit[1] * s0.distance_mm,
+    m.start[2] + m.unit[2] * s0.distance_mm
   };
 
-  for (uint8_t split = 0; split < cfg::MAX_SEGMENT_SPLITS && ds > 0.01f; ++split) {
-    const float d1 = distance_mm + ds;
+  for (uint8_t split = 0; split < cfg::MAX_SEGMENT_SPLITS; ++split) {
+    const JerkSample s1 = profile_.sample(time_s + dt);
+    const float ds = s1.distance_mm - s0.distance_mm;
     const float p1[3] = {
-      m.start[0] + m.unit[0] * d1,
-      m.start[1] + m.unit[1] * d1,
-      m.start[2] + m.unit[2] * d1
+      m.start[0] + m.unit[0] * s1.distance_mm,
+      m.start[1] + m.unit[1] * s1.distance_mm,
+      m.start[2] + m.unit[2] * s1.distance_mm
     };
-    float error = 0.0f;
-    if (!kinematics_.towerChordError(p0, p1, error)) return 0.0f;
-    if (error <= cfg::MAX_TOWER_CHORD_ERROR_MM) break;
-    ds *= 0.5f;
+    float chord_error = 0.0f;
+    if (!kinematics_.towerChordError(p0, p1, chord_error)) return 0.0f;
+    if (ds <= cfg::MAX_SEGMENT_MM && chord_error <= cfg::MAX_TOWER_CHORD_ERROR_MM) break;
+    dt *= 0.5f;
+    if (dt <= cfg::MIN_SEGMENT_TIME_S) break;
   }
-  return ds;
+
+  if (dt > remaining_time) dt = remaining_time;
+  return dt;
 }
 
 uint8_t MotionController::smoothingLevelForTicks(const uint32_t base_ticks) const {
   uint8_t level = 0;
-
-  if (smoothing_mode_ >= 0) {
-    level = uint8_t(smoothing_mode_);
-  }
+  if (smoothing_mode_ >= 0) level = uint8_t(smoothing_mode_);
   else {
     if (base_ticks >= cfg::SMOOTH_L2_INTERVAL_TICKS) level = 2;
     else if (base_ticks >= cfg::SMOOTH_L1_INTERVAL_TICKS) level = 1;
     if (level > cfg::AUTO_SMOOTHING_MAX_LEVEL) level = cfg::AUTO_SMOOTHING_MAX_LEVEL;
   }
-
   if (level > cfg::MAX_SMOOTHING_LEVEL) level = cfg::MAX_SMOOTHING_LEVEL;
   while (level && (base_ticks >> level) < cfg::MIN_EVENT_INTERVAL_TICKS) --level;
   return level;
 }
 
-static uint16_t clampTimerTicks(uint32_t ticks) {
-  if (ticks < cfg::MIN_EVENT_INTERVAL_TICKS) ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
-  if (ticks > cfg::MAX_EVENT_INTERVAL_TICKS) ticks = cfg::MAX_EVENT_INTERVAL_TICKS;
+static uint16_t clampTimerTicks(const uint32_t ticks) {
+  if (ticks < cfg::MIN_EVENT_INTERVAL_TICKS) return cfg::MIN_EVENT_INTERVAL_TICKS;
+  if (ticks > cfg::MAX_EVENT_INTERVAL_TICKS) return cfg::MAX_EVENT_INTERVAL_TICKS;
   return uint16_t(ticks);
+}
+
+static int32_t towerPhaseQ15(const float tower_mm) {
+  const float q = tower_mm * cfg::STEPS_PER_MM * float(PHASE_ONE);
+  return int32_t(lroundf(q));
+}
+
+static int32_t roundedPhaseSteps(const int32_t q15) {
+  if (q15 >= 0) return (q15 + PHASE_HALF) >> PHASE_FRAC_BITS;
+  return -(((-q15) + PHASE_HALF) >> PHASE_FRAC_BITS);
 }
 
 bool MotionController::generateOneSegment() {
@@ -245,108 +201,123 @@ bool MotionController::generateOneSegment() {
   if (queue_.full()) return false;
 
   const PathMove &m = planner_.move(generating_index_);
-  const float remaining = m.length_mm - generated_distance_mm_;
-  if (remaining <= 0.00001f) {
+  if (!profile_.valid()) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+
+  const float remaining_time = profile_.totalTime() - generated_time_s_;
+  if (remaining_time <= 1.0e-7f) {
     ++generating_index_;
     if (generating_index_ >= planner_.count()) { generation_complete_ = true; return true; }
     return initGeneratingMove(generating_index_);
   }
 
-  const float segment_start_distance = generated_distance_mm_;
-  const float ds = adaptiveSegmentLength(m, segment_start_distance);
-  if (ds <= 0.0f) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
-  float next_distance = segment_start_distance + ds;
-  if (next_distance > m.length_mm) next_distance = m.length_mm;
-  const float actual_ds = next_distance - segment_start_distance;
+  const float dt = adaptiveSegmentDuration(m, generated_time_s_);
+  if (dt <= 0.0f) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
+  float next_time = generated_time_s_ + dt;
+  if (next_time > profile_.totalTime()) next_time = profile_.totalTime();
+  const float actual_dt = next_time - generated_time_s_;
+
+  const JerkSample js0 = profile_.sample(generated_time_s_);
+  const JerkSample js1 = profile_.sample(next_time);
+  const float actual_ds = js1.distance_mm - js0.distance_mm;
+  if (actual_ds <= 0.0f) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
 
   const float startpoint[3] = {
-    m.start[0] + m.unit[0] * segment_start_distance,
-    m.start[1] + m.unit[1] * segment_start_distance,
-    m.start[2] + m.unit[2] * segment_start_distance
+    m.start[0] + m.unit[0] * js0.distance_mm,
+    m.start[1] + m.unit[1] * js0.distance_mm,
+    m.start[2] + m.unit[2] * js0.distance_mm
   };
   const float endpoint[3] = {
-    m.start[0] + m.unit[0] * next_distance,
-    m.start[1] + m.unit[1] * next_distance,
-    m.start[2] + m.unit[2] * next_distance
+    m.start[0] + m.unit[0] * js1.distance_mm,
+    m.start[1] + m.unit[1] * js1.distance_mm,
+    m.start[2] + m.unit[2] * js1.distance_mm
   };
 
+  float tower_start[3], tower_end[3];
   int32_t target_steps[3];
-  if (!kinematics_.cartesianToSteps(endpoint, target_steps) || !towerWithinHome(target_steps)) {
+  if (!kinematics_.cartesianToTower(startpoint, tower_start)
+      || !kinematics_.cartesianToTower(endpoint, tower_end)
+      || !kinematics_.cartesianToSteps(endpoint, target_steps)
+      || !towerWithinHome(target_steps)) {
     stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
   }
 
-  MotorBlock block = {{0,0,0}, 0, 0, cfg::MAX_EVENT_INTERVAL_TICKS, 0};
-  uint32_t event_count = 0;
+  MotorBlock block = {};
+  float continuous_master_steps = 0.0f;
   for (uint8_t axis = 0; axis < 3; ++axis) {
-    const int32_t delta = target_steps[axis] - generated_motor_steps_[axis];
-    const uint32_t steps = uint32_t(delta >= 0 ? delta : -delta);
-    block.steps[axis] = steps;
-    if (steps > event_count) event_count = steps;
-    if (delta >= 0) block.direction_bits |= uint8_t(1U << axis);
-  }
-
-  generated_distance_mm_ = next_distance;
-  for (uint8_t axis = 0; axis < 3; ++axis) generated_motor_steps_[axis] = target_steps[axis];
-
-  const bool reached_final_steps =
-    target_steps[0] == final_motor_steps_[0] &&
-    target_steps[1] == final_motor_steps_[1] &&
-    target_steps[2] == final_motor_steps_[2];
-  if (reached_final_steps && m.length_mm - generated_distance_mm_ < cfg::MIN_SEGMENT_MM)
-    generated_distance_mm_ = m.length_mm;
-
-  if (event_count) {
-    // Derive event frequency from the continuous tower displacement, not from
-    // the rounded integer event_count. This removes the residual low-speed
-    // frequency breathing caused by endpoint quantization (47,48,47... steps).
-    float tower_start[3], tower_end[3];
-    if (!kinematics_.cartesianToTower(startpoint, tower_start)
-        || !kinematics_.cartesianToTower(endpoint, tower_end)) {
+    block.phase_start_q15[axis] = towerPhaseQ15(tower_start[axis]);
+    block.phase_end_q15[axis] = towerPhaseQ15(tower_end[axis]);
+    const int32_t phase_delta = block.phase_end_q15[axis] - block.phase_start_q15[axis];
+    const float continuous_steps = fabsf(float(phase_delta) / float(PHASE_ONE));
+    if (continuous_steps > continuous_master_steps) continuous_master_steps = continuous_steps;
+    if (phase_delta >= 0) block.direction_bits |= uint8_t(1U << axis);
+    if (roundedPhaseSteps(block.phase_end_q15[axis]) != target_steps[axis]) {
       stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
     }
-
-    float continuous_master_steps = 0.0f;
-    for (uint8_t axis = 0; axis < 3; ++axis) {
-      const float continuous_steps = fabsf(tower_end[axis] - tower_start[axis]) * cfg::STEPS_PER_MM;
-      if (continuous_steps > continuous_master_steps) continuous_master_steps = continuous_steps;
-    }
-    if (continuous_master_steps < 0.001f) continuous_master_steps = float(event_count);
-
-    float steps_per_path_mm = continuous_master_steps / actual_ds;
-    if (steps_per_path_mm < 0.001f) steps_per_path_mm = float(event_count) / actual_ds;
-
-    const float speed_start = profileSpeed(m, segment_start_distance);
-    const float speed_end = profileSpeed(m, next_distance);
-    float rate_start = steps_per_path_mm * speed_start;
-    float rate_end = steps_per_path_mm * speed_end;
-    if (rate_start < 1.0f) rate_start = 1.0f;
-    if (rate_end < 1.0f) rate_end = 1.0f;
-
-    uint32_t base_start = uint32_t(float(cfg::TIMER_HZ) / rate_start + 0.5f);
-    uint32_t base_end = uint32_t(float(cfg::TIMER_HZ) / rate_end + 0.5f);
-    base_start = clampTimerTicks(base_start);
-    base_end = clampTimerTicks(base_end);
-
-    const uint32_t slower_ticks = base_start > base_end ? base_start : base_end;
-    block.smoothing_level = smoothingLevelForTicks(slower_ticks);
-
-    uint32_t start_ticks = base_start >> block.smoothing_level;
-    uint32_t end_ticks = base_end >> block.smoothing_level;
-    block.interval_start_ticks = clampTimerTicks(start_ticks);
-    const uint16_t interval_end_ticks = clampTimerTicks(end_ticks);
-
-    const uint32_t virtual_events = event_count << block.smoothing_level;
-    if (virtual_events > 1U) {
-      const int32_t diff_ticks = int32_t(interval_end_ticks) - int32_t(block.interval_start_ticks);
-      block.interval_delta_q8 = (diff_ticks * 256L) / int32_t(virtual_events - 1U);
-    }
-    else block.interval_delta_q8 = 0;
-
-    if (!queue_.enqueue(block)) return false;
-    stepper_.kickMotion();
   }
 
-  if (generated_distance_mm_ >= m.length_mm - 0.00001f) {
+  float requested_base_events = continuous_master_steps;
+  const float time_events = actual_dt * cfg::PHASE_MIN_EVENT_HZ;
+  if (requested_base_events < time_events) requested_base_events = time_events;
+  uint32_t base_events = uint32_t(ceilf(requested_base_events));
+  if (!base_events) base_events = 1U;
+
+  const float total_ticks_f = actual_dt * float(cfg::TIMER_HZ);
+  if (total_ticks_f < float(cfg::MIN_EVENT_INTERVAL_TICKS)) {
+    stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
+  }
+
+  uint32_t avg_base_ticks = uint32_t(total_ticks_f / float(base_events) + 0.5f);
+  if (avg_base_ticks < cfg::MIN_EVENT_INTERVAL_TICKS) avg_base_ticks = cfg::MIN_EVENT_INTERVAL_TICKS;
+  uint8_t level = smoothingLevelForTicks(avg_base_ticks);
+  while (level && (total_ticks_f / float(base_events << level)) < float(cfg::MIN_EVENT_INTERVAL_TICKS)) --level;
+  block.virtual_events = base_events << level;
+  if (!block.virtual_events) block.virtual_events = 1U;
+
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    const int32_t delta = block.phase_end_q15[axis] - block.phase_start_q15[axis];
+    block.phase_inc_q15[axis] = delta / int32_t(block.virtual_events);
+  }
+
+  // Preserve the exact segment duration while smoothly ramping event intervals
+  // according to the jerk-profile endpoint speeds. The Q8 ramp executes in ISR.
+  if (block.virtual_events == 1U) {
+    block.interval_start_ticks = clampTimerTicks(uint32_t(total_ticks_f + 0.5f));
+    block.interval_delta_q8 = 0;
+  }
+  else {
+    const float event_density = float(block.virtual_events) / actual_ds;
+    float rate_start = event_density * js0.speed_mm_s;
+    float rate_end = event_density * js1.speed_mm_s;
+    if (rate_start < 1.0f) rate_start = 1.0f;
+    if (rate_end < 1.0f) rate_end = 1.0f;
+    float raw_start = float(cfg::TIMER_HZ) / rate_start;
+    float raw_end = float(cfg::TIMER_HZ) / rate_end;
+    const float raw_total = float(block.virtual_events) * 0.5f * (raw_start + raw_end);
+    const float scale = raw_total > 0.0f ? total_ticks_f / raw_total : 1.0f;
+    raw_start *= scale;
+    raw_end *= scale;
+
+    block.interval_start_ticks = clampTimerTicks(uint32_t(raw_start + 0.5f));
+    const uint16_t interval_end = clampTimerTicks(uint32_t(raw_end + 0.5f));
+    const int32_t diff = int32_t(interval_end) - int32_t(block.interval_start_ticks);
+    block.interval_delta_q8 = (diff * 256L) / int32_t(block.virtual_events - 1U);
+  }
+
+  if (phase_anchor_pending_) block.flags |= BLOCK_FLAG_PHASE_ANCHOR;
+
+  if (!queue_.enqueue(block)) return false;
+  phase_anchor_pending_ = false;
+  stepper_.kickMotion();
+
+  generated_time_s_ = next_time;
+  generated_distance_mm_ = js1.distance_mm;
+  for (uint8_t axis = 0; axis < 3; ++axis) generated_motor_steps_[axis] = target_steps[axis];
+
+  if (generated_time_s_ >= profile_.totalTime() - 1.0e-7f) {
+    for (uint8_t axis = 0; axis < 3; ++axis)
+      if (generated_motor_steps_[axis] != final_motor_steps_[axis]) {
+        stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
+      }
     ++generating_index_;
     if (generating_index_ >= planner_.count()) generation_complete_ = true;
     else if (!initGeneratingMove(generating_index_)) {
@@ -362,6 +333,7 @@ bool MotionController::startBatch() {
   queue_.clear();
   generating_index_ = 0;
   generation_complete_ = false;
+  phase_anchor_pending_ = true;
   if (!initGeneratingMove(0)) return false;
   batch_active_ = true;
   flush_requested_ = false;
@@ -388,6 +360,7 @@ void MotionController::failController() {
   batch_active_ = false;
   generation_complete_ = false;
   flush_requested_ = false;
+  phase_anchor_pending_ = false;
   planner_.clear();
   queue_.clear();
   home_state_ = HOME_IDLE;
@@ -443,6 +416,7 @@ void MotionController::service() {
     planner_.clear();
     batch_active_ = false;
     generation_complete_ = false;
+    phase_anchor_pending_ = false;
     event_ = EVENT_MOVE_DONE;
   }
 }
@@ -450,13 +424,14 @@ void MotionController::service() {
 void MotionController::emergencyStop() {
   stepper_.emergencyStop(FAULT_ESTOP);
   queue_.clear(); planner_.clear(); homed_ = false; home_state_ = HOME_IDLE;
-  batch_active_ = false; generation_complete_ = false; flush_requested_ = false; event_ = EVENT_FAULT;
+  batch_active_ = false; generation_complete_ = false; flush_requested_ = false;
+  phase_anchor_pending_ = false; event_ = EVENT_FAULT;
 }
 
 bool MotionController::clearFault() {
   if (batch_active_ || home_state_ != HOME_IDLE || !planner_.empty() || stepper_.motionBusy()) return false;
   if (!stepper_.clearFault()) return false;
-  event_ = EVENT_NONE; homed_ = false; return true;
+  event_ = EVENT_NONE; homed_ = false; phase_anchor_pending_ = false; return true;
 }
 
 } // namespace deltacore
