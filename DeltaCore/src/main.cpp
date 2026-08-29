@@ -249,7 +249,7 @@ static void printPerformance(const bool path_summary) {
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.4.3 motion settings:"));
+  Serial.println(F("DeltaCore v0.4.4 motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
   Serial.print(F("  jerk_limit=")); Serial.println(motion.jerkLimit(), 0);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
@@ -264,7 +264,9 @@ static void printMotionSettings() {
   Serial.print(F("  debug_level=")); Serial.println(debug_level);
   Serial.print(F("  host_keepalive_ms=")); Serial.println(host_keepalive_ms);
   Serial.println(F("  trajectory=7-phase time-domain jerk-limited S-curve"));
+  Serial.println(F("  delta_generator=curvature-bounded + cached tower endpoint"));
   Serial.println(F("  stepgen=phase-continuous Q15 A/B/C + Q8 Timer1 interval ramp"));
+  Serial.println(F("  stepper_queue=compact MotorBlock + main-loop block prefetch"));
   Serial.println(F("  serial=barrier-aware deferred queue + immediate M105/M112"));
   Serial.print(F("  motion_start_prefill_blocks=")); Serial.println(cfg::MOTION_START_PREFILL_BLOCKS);
 }
@@ -335,7 +337,7 @@ static void processCommand(char *raw_line, bool count_rx = true) {
   }
 
   if (commandStarts(line, "HELP")) {
-    Serial.println(F("DeltaCore v0.4.3: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
+    Serial.println(F("DeltaCore v0.4.4: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
     ack(); return;
   }
   if (commandStarts(line, "STATUS") || commandStarts(line, "M973")) { printStatus(); ack(); return; }
@@ -355,9 +357,9 @@ static void processCommand(char *raw_line, bool count_rx = true) {
     Serial.println(F("echo:runtime motion defaults restored")); ack(); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.4.3 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
+    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.4.4 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
     Serial.print(bootSessionId());
-    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+ADAPTIVE_DELTA+PHASE_CONTINUOUS_ABC+QUEUE_PREFILL+KICK_RECOVERY DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
+    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+FAST_DELTA_GEN+PHASE_CONTINUOUS_ABC+BLOCK_PREFETCH DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
     ack(); return;
   }
 
@@ -489,10 +491,10 @@ void setup() {
   motion.begin();
 
   Serial.println();
-  Serial.println(F("DeltaCore 0.4.3 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.4.4 - Mega2560 / MKS MINI v2.0"));
   printResetCause();
-  Serial.println(F("Motion: jerk-limited look-ahead + adaptive Delta + phase-continuous A/B/C"));
-  Serial.println(F("Stepper: persistent Q15 actuator phase + Q8 Timer1 event ramp; no float in ISR"));
+  Serial.println(F("Motion: jerk-limited look-ahead + curvature-bounded fast Delta generator"));
+  Serial.println(F("Stepper: compact phase-continuous A/B/C blocks + main-loop prefetch"));
   Serial.println(F("Scheduler: prefill + automatic Timer1 kick recovery after queue refill"));
   Serial.println(F("Serial: barrier-aware deferred command queue; M105/M112 remain immediate"));
   Serial.println(F("Debug: M971 PERF includes phase continuity + timer/queue health"));
@@ -503,11 +505,8 @@ void setup() {
 void loop() {
   serviceSerial();
   motion.service();
-  // During an exceptionally compute-heavy Delta segment the ISR may consume
-  // the queue before the main loop refills it. StepperEngine then stops Timer1.
-  // motion.service() can refill the queue, but v0.4.2 had no restart path once
-  // motion_started_ was already true. kickMotion() is intentionally idempotent:
-  // it does nothing while Timer1 motion is active and restarts only when idle.
+  // Idempotent prefetch/recovery service: fills the next block outside Timer1 ISR
+  // and restarts Timer1 only if an exceptional queue drain stopped motion.
   stepper.kickMotion();
 
   const ControllerEvent event = motion.consumeEvent();
