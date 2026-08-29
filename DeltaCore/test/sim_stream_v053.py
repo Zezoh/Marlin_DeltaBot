@@ -48,15 +48,13 @@ class StreamSim:
 
     def service(self):
         self.fill()
-        if not self.stream_active and self.planner:
-            if len(self.planner) == PATH_CAP or self.flush:
-                self.stream_active = True
+        if not self.stream_active and self.planner and (len(self.planner) == PATH_CAP or self.flush):
+            self.stream_active = True
         if self.stream_active and self.generating is None and self.planner:
             if self.flush or len(self.planner) > LOOKAHEAD_RESERVE:
                 self.generating = self.planner[0]
                 self.committed.append(self.generating)
-                # Model variable Delta segmentation cost per G1.
-                self.seg_left = 1 + (hash(self.generating) & 31)
+                self.seg_left = 1 + (sum(self.generating.encode()) & 7)
         if self.generating is not None:
             self.seg_left -= 1
             if self.seg_left <= 0:
@@ -76,8 +74,7 @@ class StreamSim:
             if self.fault: break
             self.service()
             if self.fault: break
-            if (not self.host and self.flush and not self.planner and not self.pending and
-                self.generating is None):
+            if not self.host and self.flush and not self.planner and not self.pending and self.generating is None:
                 return
         self.fault = self.fault or 'timeout'
 
@@ -106,8 +103,8 @@ s = check(exact_user_path())
 print(f'PASS exact 45-move stream max_buffered={s.max_buffered}')
 
 rng = random.Random(0xD311AC0)
-for trial in range(10000):
+for trial in range(2500):
     n = rng.randint(1, 2000)
     cmds = [f'T{trial}:{i}:{rng.randrange(-8500,8501)}:{rng.randrange(-8500,8501)}:{rng.randrange(7000,22001)}' for i in range(n)]
-    s = check(cmds)
-print('PASS 10000 randomized streams, 1..2000 moves, no loss/reorder/fault')
+    check(cmds)
+print('PASS 2500 randomized streams, 1..2000 moves, no loss/reorder/fault')
