@@ -71,8 +71,7 @@ static void ack() { Serial.println(F("ok")); }
 
 static void errorAck(const __FlashStringHelper *msg) {
   ++command_errors;
-  Serial.print(F("error:"));
-  Serial.println(msg);
+  Serial.print(F("error:")); Serial.println(msg);
   ack();
 }
 
@@ -159,6 +158,7 @@ static void printStatus() {
   Serial.print(F(" smooth=")); Serial.print(motion.smoothingMode());
   Serial.print(F(" rx=")); Serial.print(rx_lines);
   Serial.print(F(" parse_ovf=")); Serial.print(parser_overflows);
+  Serial.print(F(" unknown=")); Serial.print(unknown_commands);
   Serial.print(F(" cmd_err=")); Serial.print(command_errors);
   Serial.print(F(" fault=")); Serial.println(faultName(stepper.fault()));
 }
@@ -168,6 +168,7 @@ static void printPerformance(const bool path_summary) {
   stepper.snapshotStats(s);
   const uint32_t expected_final_stop = s.queue_empty_stops ? 1UL : 0UL;
   const uint32_t starves = s.queue_empty_stops - expected_final_stop;
+
   Serial.print(F("PERF session=")); Serial.print(bootSessionId());
   Serial.print(F(" up_ms=")); Serial.print(millis()); Serial.print(' ');
   if (path_summary) {
@@ -192,7 +193,7 @@ static void printPerformance(const bool path_summary) {
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.3.4 motion settings:"));
+  Serial.println(F("DeltaCore v0.3.5 motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
   Serial.print(F("  max_cart_feed=")); Serial.println(cfg::MAX_CARTESIAN_FEED_MM_S, 1);
@@ -206,6 +207,7 @@ static void printMotionSettings() {
   Serial.print(F("  host_keepalive_ms=")); Serial.println(host_keepalive_ms);
   Serial.println(F("  timing=time-domain Q8 interval ramp from continuous tower displacement"));
   Serial.println(F("  serial_rx=256 serial_tx=128 protocol=one-command-one-ACK"));
+  Serial.println(F("  boot_session=validated wear-level EEPROM ring32"));
 }
 
 static bool commandStarts(const char *line, const char *cmd) {
@@ -245,12 +247,14 @@ static void processCommand(char *raw_line) {
 
   if (commandStarts(line, "M105")) { Serial.println(F("ok T:0.0 /0.0 B:0.0 /0.0")); return; }
   if (commandStarts(line, "M110")) { ack(); return; }
+
   if (commandStarts(line, "G92")) {
     if (strchr(line, 'X') || strchr(line, 'Y') || strchr(line, 'Z')) {
       errorAck(F("G92 XYZ unsupported; use G28 for Delta position reference")); return;
     }
     Serial.println(F("echo:G92 E ignored (no extruder axis)")); ack(); return;
   }
+
   if (commandStarts(line, "M113")) {
     float s;
     if (getParam(line, 'S', s)) {
@@ -260,6 +264,7 @@ static void processCommand(char *raw_line) {
     }
     Serial.print(F("echo:host_keepalive_ms=")); Serial.println(host_keepalive_ms); ack(); return;
   }
+
   if (commandStarts(line, "M111")) {
     float s;
     if (getParam(line, 'S', s)) {
@@ -269,9 +274,10 @@ static void processCommand(char *raw_line) {
   }
 
   if (commandStarts(line, "HELP")) {
-    Serial.println(F("DeltaCore v0.3.4: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M111 M113 M17 M18 M112 M999 M115 M503 STATUS")); ack(); return;
+    Serial.println(F("DeltaCore v0.3.5: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
+    ack(); return;
   }
-  if (commandStarts(line, "STATUS")) { printStatus(); ack(); return; }
+  if (commandStarts(line, "STATUS") || commandStarts(line, "M973")) { printStatus(); ack(); return; }
   if (commandStarts(line, "M119")) { printEndstops(); ack(); return; }
   if (commandStarts(line, "M114")) { printPosition(); ack(); return; }
   if (commandStarts(line, "M971")) { printPerformance(false); ack(); return; }
@@ -282,13 +288,13 @@ static void processCommand(char *raw_line) {
     Serial.println(F("echo:performance counters cleared")); ack(); return;
   }
   if (commandStarts(line, "M503")) { printMotionSettings(); ack(); return; }
-  if (commandStarts(line, "M500")) { Serial.println(F("echo:EEPROM used only for boot-session diagnostics; motion settings not persisted")); ack(); return; }
+  if (commandStarts(line, "M500")) { Serial.println(F("echo:EEPROM used only for wear-leveled boot-session diagnostics; motion settings not persisted")); ack(); return; }
   if (commandStarts(line, "M502")) {
     if (!motion.setAcceleration(cfg::DEFAULT_ACCEL_MM_S2) || !motion.setSmoothingMode(-1)) { errorAck(F("BUSY")); return; }
     Serial.println(F("echo:runtime motion defaults restored")); ack(); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.3.4 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
+    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.3.5 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
     Serial.print(bootSessionId());
     Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+ADAPTIVE_DELTA+TIME_RAMP_DDA DEBUG:PERF+BOOT_SESSION SERIAL:ROBUST_ACK"));
     ack(); return;
@@ -329,7 +335,8 @@ static void processCommand(char *raw_line) {
   if (commandStarts(line, "G28")) {
     const RequestResult r = motion.requestHome();
     if (r != REQUEST_OK) { ++command_errors; Serial.print(F("error:G28 ")); Serial.println(requestName(r)); ack(); return; }
-    home_ack_pending = true; last_keepalive_ms = millis(); Serial.println(F("echo:homing started")); return;
+    home_ack_pending = true; last_keepalive_ms = millis();
+    Serial.println(F("echo:homing started")); return;
   }
 
   if (commandStarts(line, "G0") || commandStarts(line, "G1")) {
@@ -406,11 +413,11 @@ void setup() {
   motion.begin();
 
   Serial.println();
-  Serial.println(F("DeltaCore 0.3.4 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.3.5 - Mega2560 / MKS MINI v2.0"));
   printResetCause();
   Serial.println(F("Motion: look-ahead + tower limits + adaptive Delta + continuous Q8 time-ramp DDA"));
   Serial.println(F("Serial: RX256/TX128, one-command-one-ACK, G28/M400 keepalive barriers"));
-  Serial.println(F("Debug: persistent session id + uptime + M971 PERF + M111 S0..2"));
+  Serial.println(F("Debug: validated wear-level session + uptime + M971 PERF + M973 STATUS + M111 S0..2"));
   Serial.println(F("SAFE BOOT: motors disabled, G28 required before G1"));
   Serial.println(F("ok READY"));
 }
