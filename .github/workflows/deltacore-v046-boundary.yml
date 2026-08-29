@@ -1,0 +1,42 @@
+name: DeltaCore v0.4.6 Boundary Hotfix
+on:
+  push:
+    branches: [codex/deltacore-motion-baseline-v0.1]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[v0.4.6-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/deltacore-motion-baseline-v0.1
+          fetch-depth: 0
+      - name: Patch source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('DeltaCore/src/StepperEngine.cpp')
+          s=p.read_text()
+          old='''  if (!phase_.active()) {\n    block_active_ = false;\n    if (loadNextMotionBlock()) {\n      if (active_pulse_axes_) {\n        pending_direction_bits_ = currentBlock().direction_bits;\n        direction_pending_ = true;\n      }\n      else {\n        applyDirectionBits(currentBlock().direction_bits);\n        direction_pending_ = false;\n      }\n      scheduleMotionInterval(currentMotionInterval());\n    }\n'''
+          new='''  if (!phase_.active()) {\n    block_active_ = false;\n\n    // Boundary-first scheduling: reserve the next compare deadline before\n    // phase/block handoff work. Previously we loaded and validated the next\n    // block first, so short intervals were already late and the guard stretched\n    // the trajectory. The published prefetch normally provides this deadline;\n    // the ring fallback remains available inside loadNextMotionBlock().\n    uint16_t boundary_ticks = 0;\n    if (prefetch_valid_) boundary_ticks = prefetch_block_->interval_start_ticks;\n    else if (queue_ && !queue_->empty()) {\n      servicePrefetch();\n      if (prefetch_valid_) boundary_ticks = prefetch_block_->interval_start_ticks;\n    }\n    if (boundary_ticks) scheduleMotionInterval(boundary_ticks);\n\n    if (loadNextMotionBlock()) {\n      if (active_pulse_axes_) {\n        pending_direction_bits_ = currentBlock().direction_bits;\n        direction_pending_ = true;\n      }\n      else {\n        applyDirectionBits(currentBlock().direction_bits);\n        direction_pending_ = false;\n      }\n      // Do not reschedule here: the deadline was already reserved above.\n      // If no published deadline was available, fall back to the loaded block.\n      if (!boundary_ticks) scheduleMotionInterval(currentMotionInterval());\n    }\n'''
+          if old not in s: raise SystemExit('boundary anchor not found')
+          p.write_text(s.replace(old,new,1))
+
+          p=Path('DeltaCore/src/main.cpp')
+          s=p.read_text().replace('0.4.5','0.4.6')
+          s=s.replace('BLOCK_PREFETCH+ISR_FALLBACK DEBUG:','BLOCK_PREFETCH+ISR_FALLBACK+BOUNDARY_FIRST DEBUG:')
+          p.write_text(s)
+          p=Path('DeltaCore/test/test_math.cpp')
+          p.write_text(p.read_text().replace('v0.4.5','v0.4.6'))
+          PY
+      - name: Commit source
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add DeltaCore
+          git commit -m "DeltaCore v0.4.6: schedule block boundary before handoff [v0.4.6-applied]"
+          git push origin HEAD:codex/deltacore-motion-baseline-v0.1
