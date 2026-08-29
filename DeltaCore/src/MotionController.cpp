@@ -7,14 +7,15 @@
 namespace deltacore {
 
 static constexpr uint8_t LOOKAHEAD_RESERVE_MOVES = 4;
+static constexpr uint8_t LOOKAHEAD_REFILL_TRIGGER_MOVES = 8;
 
 MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper,
                                    Kinematics &kinematics, PathPlanner &planner)
   : queue_(queue), stepper_(stepper), kinematics_(kinematics), planner_(planner),
     homed_(false), home_state_(HOME_IDLE), event_(EVENT_NONE), last_request_error_(REQUEST_OK),
     current_xyz_{0,0,0}, command_xyz_{0,0,0}, generated_xyz_{0,0,0}, home_motor_steps_{0,0,0},
-    stream_active_(false), motion_started_(false), generating_move_(false), flush_requested_(false),
-    last_enqueue_ms_(0), carry_entry_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S),
+    stream_active_(false), motion_started_(false), generating_move_(false), planner_plan_valid_(false),
+    flush_requested_(false), last_enqueue_ms_(0), carry_entry_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S),
     committed_exit_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S),
     generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_tower_mm_{0,0,0},
     segment_length_limit_mm_(cfg::MAX_SEGMENT_MM), generated_motor_steps_{0,0,0},
@@ -28,6 +29,7 @@ void MotionController::begin() {
   stream_active_ = false;
   motion_started_ = false;
   generating_move_ = false;
+  planner_plan_valid_ = false;
   flush_requested_ = false;
   smoothing_mode_ = -1;
   carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
@@ -43,6 +45,7 @@ void MotionController::invalidatePosition() {
   pending_head_ = pending_tail_ = pending_count_ = 0;
   stream_active_ = false;
   generating_move_ = false;
+  planner_plan_valid_ = false;
 }
 
 bool MotionController::busy() const {
@@ -83,6 +86,7 @@ RequestResult MotionController::requestHome() {
   if (busy()) return last_request_error_ = REQUEST_BUSY;
   homed_ = false;
   planner_.clear();
+  planner_plan_valid_ = false;
   pending_head_ = pending_tail_ = pending_count_ = 0;
   queue_.clear();
   stepper_.clearHomeResult();
@@ -132,6 +136,7 @@ bool MotionController::dequeuePending(PendingMove &move) {
 }
 
 bool MotionController::fillPlannerFromPending() {
+  bool appended = false;
   while (!planner_.full() && pending_count_) {
     PendingMove p;
     if (!dequeuePending(p)) break;
@@ -139,7 +144,9 @@ bool MotionController::fillPlannerFromPending() {
     if (!planner_.empty()) planner_.latestTarget(start);
     else for (uint8_t a = 0; a < 3; ++a) start[a] = generated_xyz_[a];
     if (!planner_.enqueue(start, p.target, p.feed_mm_s, acceleration_mm_s2_)) return false;
+    appended = true;
   }
+  if (appended) planner_plan_valid_ = false;
   return true;
 }
 
@@ -162,12 +169,16 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   if (feed_mm_s < 1.0f) feed_mm_s = 1.0f;
   if (feed_mm_s > cfg::MAX_CARTESIAN_FEED_MM_S) feed_mm_s = cfg::MAX_CARTESIAN_FEED_MM_S;
 
-  if (!fillPlannerFromPending()) return last_request_error_ = REQUEST_INVALID;
+  // Keep newly accepted commands in the compact pending ring while a planned
+  // window is executing. This makes the current lookahead solution immutable:
+  // no expensive full-window replan is injected at every short-move boundary.
   if (!enqueuePending(target_xyz, feed_mm_s)) {
-    if (!fillPlannerFromPending() || !enqueuePending(target_xyz, feed_mm_s))
+    // Capacity fallback: if the PathPlanner has room, transfer a pending batch.
+    // The window is marked dirty and will be replanned before the next move,
+    // never in the middle of the current JerkProfile.
+    if (planner_.full() || !fillPlannerFromPending() || !enqueuePending(target_xyz, feed_mm_s))
       return last_request_error_ = REQUEST_QUEUE_FULL;
   }
-  if (!fillPlannerFromPending()) return last_request_error_ = REQUEST_INVALID;
 
   for (uint8_t a = 0; a < 3; ++a) command_xyz_[a] = target_xyz[a];
   default_feed_mm_s_ = feed_mm_s;
@@ -215,7 +226,10 @@ bool MotionController::initGeneratingMove(const PathMove &m) {
 
 bool MotionController::startNextPlannedMove() {
   if (generating_move_ || !canCommitNextMove()) return false;
-  if (!planner_.plan(carry_entry_speed_mm_s_)) return false;
+  if (!planner_plan_valid_) {
+    if (!planner_.plan(carry_entry_speed_mm_s_)) return false;
+    planner_plan_valid_ = true;
+  }
   const PathMove &m = planner_.move(0);
   committed_exit_speed_mm_s_ = m.exit_speed_mm_s;
   if (!initGeneratingMove(m)) return false;
@@ -231,9 +245,6 @@ float MotionController::adaptiveSegmentDuration(const PathMove &, const float ti
   float dt = 1.0f / cfg::TARGET_SEGMENT_HZ;
   if (dt > remaining_time) dt = remaining_time;
 
-  // generated_distance_mm_ is already the exact profile sample at time_s. Avoid
-  // sampling the same point again on every segment. In the common no-split case
-  // this reduces trajectory sampling from three calls per MotorBlock to one.
   endpoint_sample = profile_.sample(time_s + dt);
   float ds = endpoint_sample.distance_mm - generated_distance_mm_;
   if (ds <= segment_length_limit_mm_) return dt;
@@ -269,9 +280,6 @@ bool MotionController::generateOneSegment() {
 
   float endpoint[3];
   if (final_segment) {
-    // Never reconstruct the final Cartesian endpoint through unit*distance. This
-    // guarantees the last block lands on the exact commanded target and avoids
-    // half-step rounding differences at move boundaries.
     for (uint8_t a = 0; a < 3; ++a) endpoint[a] = m.target[a];
     js1 = profile_.sample(profile_.totalTime());
   } else {
@@ -305,11 +313,6 @@ bool MotionController::generateOneSegment() {
   uint32_t total_ticks = uint32_t(actual_dt * float(cfg::TIMER_HZ) + 0.5f);
   if (total_ticks < block.event_count) return false;
 
-  // A jerk profile can end a few tens of microseconds after an exact 10 ms
-  // boundary (e.g. 60.0369 ms). The old code emitted that microscopic tail as
-  // its own block, then rejected it because 74 ticks < the 120-tick timer floor.
-  // For the FINAL block only, stretch the tick budget to the minimum schedulable
-  // duration. Position remains exact; the time correction is sub-millisecond.
   const uint32_t minimum_schedulable_ticks =
     uint32_t(block.event_count) * uint32_t(cfg::MIN_EVENT_INTERVAL_TICKS);
   if (total_ticks < minimum_schedulable_ticks) {
@@ -338,7 +341,7 @@ bool MotionController::generateOneSegment() {
     carry_entry_speed_mm_s_ = committed_exit_speed_mm_s_;
     if (!planner_.popFront()) return false;
     generating_move_ = false;
-    if (!fillPlannerFromPending()) return false;
+    if (planner_.empty()) planner_plan_valid_ = false;
   }
   return true;
 }
@@ -357,6 +360,7 @@ void MotionController::finishHome() {
   }
   stepper_.setMotorPositionSteps(home_steps);
   carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
+  planner_plan_valid_ = false;
   homed_ = true;
   home_state_ = HOME_IDLE;
   event_ = EVENT_HOME_DONE;
@@ -367,6 +371,7 @@ void MotionController::finishStream() {
   stream_active_ = false;
   motion_started_ = false;
   generating_move_ = false;
+  planner_plan_valid_ = false;
   flush_requested_ = false;
   carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
   committed_exit_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
@@ -377,6 +382,7 @@ void MotionController::failController() {
   stream_active_ = false;
   motion_started_ = false;
   generating_move_ = false;
+  planner_plan_valid_ = false;
   flush_requested_ = false;
   planner_.clear();
   pending_head_ = pending_tail_ = pending_count_ = 0;
@@ -413,7 +419,13 @@ void MotionController::service() {
     return;
   }
 
-  if (!fillPlannerFromPending()) {
+  // Build the first lookahead window before motion starts. Once streaming, keep
+  // that solution immutable and replenish only when the planned tail reaches a
+  // reserve zone. This turns expensive lookahead from a per-move realtime cost
+  // into a bounded rolling-window operation.
+  const bool may_replenish_window = !stream_active_ ||
+    (!generating_move_ && pending_count_ && planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES);
+  if (may_replenish_window && !fillPlannerFromPending()) {
     stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
   }
 
@@ -421,16 +433,9 @@ void MotionController::service() {
     if (planner_.full() || streamClosed()) stream_active_ = true;
   }
 
-  // Detect the actual Timer1 execution state, not merely buffered work. A
-  // prefetched block can exist while Timer1 is stopped after an underrun; using
-  // motionBusy() here would misclassify that state and restart on one block.
   if (motion_started_ && stream_active_ && !stepper_.executionActive())
     motion_started_ = false;
 
-  // Adaptive bounded producer. Normally generate one segment per pass for
-  // ingress fairness. If the motor reservoir falls below LOW_WATER, refill
-  // several blocks in the same pass (including move-boundary handoff) but
-  // never monopolize main-loop time beyond a strict microsecond budget.
   const bool refill_urgent = queue_.count() < cfg::MOTION_REFILL_LOW_WATER;
   const uint8_t burst_limit = refill_urgent ? cfg::MOTION_REFILL_MAX_BURST : 1U;
   const uint32_t refill_started_us = micros();
@@ -448,7 +453,6 @@ void MotionController::service() {
     ++produced;
     if (queue_.count() >= cfg::MOTION_REFILL_TARGET) break;
     if (uint32_t(micros() - refill_started_us) >= cfg::MOTION_REFILL_BUDGET_US) break;
-    // Once the motor queue is healthy, yield immediately to waiting RX.
     if (queue_.count() >= cfg::MOTION_REFILL_LOW_WATER && Serial.available() > 0) break;
   }
 
@@ -476,6 +480,7 @@ void MotionController::emergencyStop() {
   stream_active_ = false;
   motion_started_ = false;
   generating_move_ = false;
+  planner_plan_valid_ = false;
   flush_requested_ = false;
   event_ = EVENT_FAULT;
 }
@@ -488,6 +493,7 @@ bool MotionController::clearFault() {
   stream_active_ = false;
   motion_started_ = false;
   generating_move_ = false;
+  planner_plan_valid_ = false;
   return true;
 }
 
