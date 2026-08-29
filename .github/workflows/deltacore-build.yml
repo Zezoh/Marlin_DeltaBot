@@ -32,8 +32,11 @@ jobs:
             -o /tmp/deltacore_motion_test
           /tmp/deltacore_motion_test
 
-      - name: v0.5 exact-time hardware regression simulation
+      - name: Exact-time hardware regression simulation
         run: python3 DeltaCore/test/sim_v050.py
+
+      - name: Rolling stream state-machine stress simulation
+        run: python3 DeltaCore/test/sim_stream_v053.py
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -57,7 +60,7 @@ jobs:
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560-v0.5.2
+          name: DeltaCore-Mega2560-v0.5.3
           path: |
             DeltaCore/.pio/build/megaatmega2560/firmware.hex
             DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
