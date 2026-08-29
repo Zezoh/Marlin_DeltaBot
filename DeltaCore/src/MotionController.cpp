@@ -12,9 +12,10 @@ MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper, K
     homed_(false), home_state_(HOME_IDLE), event_(EVENT_NONE), last_request_error_(REQUEST_OK),
     current_xyz_{0,0,0}, home_motor_steps_{0,0,0}, batch_active_(false), motion_started_(false),
     generation_complete_(false), flush_requested_(false), phase_anchor_pending_(false), last_enqueue_ms_(0),
-    generating_index_(0), generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_motor_steps_{0,0,0},
-    final_motor_steps_{0,0,0}, profile_(), acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2),
-    default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S), smoothing_mode_(-1) {}
+    generating_index_(0), generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_tower_mm_{0,0,0},
+    segment_length_limit_mm_(cfg::MAX_SEGMENT_MM), generated_motor_steps_{0,0,0}, final_motor_steps_{0,0,0},
+    profile_(), acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2), default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S),
+    smoothing_mode_(-1) {}
 
 void MotionController::begin() {
   homed_ = false;
@@ -82,7 +83,7 @@ bool MotionController::towerWithinHome(const int32_t tower_steps[3]) const {
 }
 
 bool MotionController::validatePath(const float start[3], const float target[3]) const {
-  const uint8_t samples = 32;
+  const uint8_t samples = 16;
   for (uint8_t i = 0; i <= samples; ++i) {
     const float u = float(i) / float(samples);
     const float p[3] = {
@@ -111,7 +112,6 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
     const float d = target_xyz[axis] - start[axis];
     delta2 += d * d;
   }
-  // A zero-length G1 is a valid host no-op, not a motion error.
   if (delta2 < 0.00000025f) return last_request_error_ = REQUEST_OK;
 
   if (!validatePath(start, target_xyz)) return last_request_error_ = REQUEST_KINEMATICS;
@@ -137,13 +137,29 @@ bool MotionController::initGeneratingMove(const uint8_t index) {
   const PathMove &m = planner_.move(index);
   generated_time_s_ = 0.0f;
   generated_distance_mm_ = 0.0f;
-  if (!kinematics_.cartesianToSteps(m.start, generated_motor_steps_)) return false;
+
+  // Cache the exact tower start once per path move. Every generated segment then
+  // reuses the previous endpoint as its next start, removing 3 sqrtf() calls per block.
+  if (!kinematics_.cartesianToTower(m.start, generated_tower_mm_)) return false;
+  for (uint8_t axis = 0; axis < 3; ++axis)
+    generated_motor_steps_[axis] = int32_t(lroundf(generated_tower_mm_[axis] * cfg::STEPS_PER_MM));
   if (!kinematics_.cartesianToSteps(m.target, final_motor_steps_)) return false;
+
+  // Use the path's precomputed worst tower curvature to derive a conservative
+  // chord-length ceiling: e ~= k*ds^2/8. 0.70 is deliberate margin for the
+  // sampled curvature estimate. Runtime segmentation now needs no IK chord probe.
+  segment_length_limit_mm_ = cfg::MAX_SEGMENT_MM;
+  if (m.max_tower_curvature > 1.0e-7f) {
+    float chord_ds = sqrtf((8.0f * cfg::MAX_TOWER_CHORD_ERROR_MM) / m.max_tower_curvature) * 0.70f;
+    if (chord_ds < segment_length_limit_mm_) segment_length_limit_mm_ = chord_ds;
+  }
+  if (segment_length_limit_mm_ < 0.05f) segment_length_limit_mm_ = 0.05f;
+
   return profile_.configure(m.length_mm, m.entry_speed_mm_s, m.exit_speed_mm_s,
                             m.nominal_speed_mm_s, m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
 }
 
-float MotionController::adaptiveSegmentDuration(const PathMove &m, const float time_s) const {
+float MotionController::adaptiveSegmentDuration(const PathMove &, const float time_s) const {
   const float remaining_time = profile_.totalTime() - time_s;
   if (remaining_time <= 0.0f) return 0.0f;
 
@@ -151,23 +167,10 @@ float MotionController::adaptiveSegmentDuration(const PathMove &m, const float t
   if (dt > remaining_time) dt = remaining_time;
   const JerkSample s0 = profile_.sample(time_s);
 
-  const float p0[3] = {
-    m.start[0] + m.unit[0] * s0.distance_mm,
-    m.start[1] + m.unit[1] * s0.distance_mm,
-    m.start[2] + m.unit[2] * s0.distance_mm
-  };
-
   for (uint8_t split = 0; split < cfg::MAX_SEGMENT_SPLITS; ++split) {
     const JerkSample s1 = profile_.sample(time_s + dt);
     const float ds = s1.distance_mm - s0.distance_mm;
-    const float p1[3] = {
-      m.start[0] + m.unit[0] * s1.distance_mm,
-      m.start[1] + m.unit[1] * s1.distance_mm,
-      m.start[2] + m.unit[2] * s1.distance_mm
-    };
-    float chord_error = 0.0f;
-    if (!kinematics_.towerChordError(p0, p1, chord_error)) return 0.0f;
-    if (ds <= cfg::MAX_SEGMENT_MM && chord_error <= cfg::MAX_TOWER_CHORD_ERROR_MM) break;
+    if (ds <= segment_length_limit_mm_) break;
     dt *= 0.5f;
     if (dt <= cfg::MIN_SEGMENT_TIME_S) break;
   }
@@ -196,8 +199,7 @@ static uint16_t clampTimerTicks(const uint32_t ticks) {
 }
 
 static int32_t towerPhaseQ15(const float tower_mm) {
-  const float q = tower_mm * cfg::STEPS_PER_MM * float(PHASE_ONE);
-  return int32_t(lroundf(q));
+  return int32_t(lroundf(tower_mm * cfg::STEPS_PER_MM * float(PHASE_ONE)));
 }
 
 static int32_t roundedPhaseSteps(const int32_t q15) {
@@ -230,21 +232,15 @@ bool MotionController::generateOneSegment() {
   const float actual_ds = js1.distance_mm - js0.distance_mm;
   if (actual_ds <= 0.0f) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false; }
 
-  const float startpoint[3] = {
-    m.start[0] + m.unit[0] * js0.distance_mm,
-    m.start[1] + m.unit[1] * js0.distance_mm,
-    m.start[2] + m.unit[2] * js0.distance_mm
-  };
   const float endpoint[3] = {
     m.start[0] + m.unit[0] * js1.distance_mm,
     m.start[1] + m.unit[1] * js1.distance_mm,
     m.start[2] + m.unit[2] * js1.distance_mm
   };
 
-  float tower_start[3], tower_end[3];
+  float tower_end[3];
   int32_t target_steps[3];
-  if (!kinematics_.cartesianToTower(startpoint, tower_start)
-      || !kinematics_.cartesianToTower(endpoint, tower_end)) {
+  if (!kinematics_.cartesianToTower(endpoint, tower_end)) {
     stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
   }
   for (uint8_t axis = 0; axis < 3; ++axis)
@@ -256,7 +252,7 @@ bool MotionController::generateOneSegment() {
   MotorBlock block = {};
   float continuous_master_steps = 0.0f;
   for (uint8_t axis = 0; axis < 3; ++axis) {
-    block.phase_start_q15[axis] = towerPhaseQ15(tower_start[axis]);
+    block.phase_start_q15[axis] = towerPhaseQ15(generated_tower_mm_[axis]);
     block.phase_end_q15[axis] = towerPhaseQ15(tower_end[axis]);
     const int32_t phase_delta = block.phase_end_q15[axis] - block.phase_start_q15[axis];
     const float continuous_steps = fabsf(float(phase_delta) / float(PHASE_ONE));
@@ -290,8 +286,6 @@ bool MotionController::generateOneSegment() {
     block.phase_inc_q15[axis] = delta / int32_t(block.virtual_events);
   }
 
-  // Preserve the exact segment duration while smoothly ramping event intervals
-  // according to the jerk-profile endpoint speeds. The Q8 ramp executes in ISR.
   if (block.virtual_events == 1U) {
     block.interval_start_ticks = clampTimerTicks(uint32_t(total_ticks_f + 0.5f));
     block.interval_delta_q8 = 0;
@@ -316,13 +310,15 @@ bool MotionController::generateOneSegment() {
   }
 
   if (phase_anchor_pending_) block.flags |= BLOCK_FLAG_PHASE_ANCHOR;
-
   if (!queue_.enqueue(block)) return false;
   phase_anchor_pending_ = false;
 
   generated_time_s_ = next_time;
   generated_distance_mm_ = js1.distance_mm;
-  for (uint8_t axis = 0; axis < 3; ++axis) generated_motor_steps_[axis] = target_steps[axis];
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    generated_motor_steps_[axis] = target_steps[axis];
+    generated_tower_mm_[axis] = tower_end[axis];
+  }
 
   if (generated_time_s_ >= profile_.totalTime() - 1.0e-7f) {
     for (uint8_t axis = 0; axis < 3; ++axis)
@@ -421,8 +417,7 @@ void MotionController::service() {
     while (!generation_complete_ && queue_.count() < cfg::MOTION_START_PREFILL_BLOCKS) {
       if (!generateOneSegment()) break;
     }
-    if (!queue_.empty()
-        && (generation_complete_ || queue_.count() >= cfg::MOTION_START_PREFILL_BLOCKS)) {
+    if (!queue_.empty() && (generation_complete_ || queue_.count() >= cfg::MOTION_START_PREFILL_BLOCKS)) {
       stepper_.kickMotion();
       motion_started_ = true;
     }
@@ -431,6 +426,7 @@ void MotionController::service() {
     while (!generation_complete_ && queue_.freeSlots() > 1U) {
       if (!generateOneSegment()) break;
     }
+    stepper_.kickMotion();
   }
 
   if (generation_complete_ && queue_.empty() && !stepper_.motionBusy()) {
