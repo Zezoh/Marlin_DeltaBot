@@ -27,34 +27,29 @@ constexpr float MAX_TOWER_ACCEL_MM_S2 = 6000.0f;
 constexpr float TOWER_CURVATURE_ACCEL_FRACTION = 0.35f;
 constexpr float TOWER_TANGENTIAL_ACCEL_FRACTION = 0.65f;
 
-// Adaptive Delta segmentation. v0.4 samples the jerk-limited trajectory in
-// time, then splits further when Delta tower chord error requires it.
+// Adaptive Delta segmentation. The jerk-limited trajectory is sampled in time,
+// then shortened further when actuator-space curvature requires it.
 constexpr float TARGET_SEGMENT_HZ = 100.0f;
 constexpr float MIN_SEGMENT_TIME_S = 0.00125f;
 constexpr float MAX_SEGMENT_MM = 3.00f;
 constexpr float MAX_TOWER_CHORD_ERROR_MM = 0.0040f;
 constexpr uint8_t MAX_SEGMENT_SPLITS = 5;
 
-// Phase-continuous step generation. Even when a slow segment contains less
-// than one physical tower step, keep several virtual phase updates so the
-// fractional actuator phase advances smoothly instead of waiting at a block
-// boundary. This is intentionally modest for the 16 MHz AVR.
+// Legacy runtime knobs retained for command compatibility. The v0.5 integer
+// DDA stepper does not use virtual phase events.
 constexpr float PHASE_MIN_EVENT_HZ = 800.0f;
-
-// Retained only so older M503 tooling can print the previous v0.3 value while
-// transitioning to v0.4. The v0.4 generator no longer uses this threshold.
 constexpr uint8_t MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT = 48;
-
-// Burst look-ahead queue. M400 / FLUSH starts it immediately.
-constexpr uint8_t PATH_QUEUE_SIZE = 16;
-constexpr uint8_t STREAM_PENDING_SIZE = 32;
-constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
-
-// Optional phase-event oversampling. Auto remains deliberately mild.
 constexpr uint8_t MAX_SMOOTHING_LEVEL = 2;
 constexpr uint8_t AUTO_SMOOTHING_MAX_LEVEL = 1;
 constexpr uint16_t SMOOTH_L1_INTERVAL_TICKS = 1800;
 constexpr uint16_t SMOOTH_L2_INTERVAL_TICKS = 5000;
+
+// Rolling lookahead keeps one PathMove window only. Additional accepted G1s
+// are stored compactly as XYZ+feed requests, avoiding another large PathMove
+// array while allowing a continuous stream across planning windows.
+constexpr uint8_t PATH_QUEUE_SIZE = 16;
+constexpr uint8_t STREAM_PENDING_SIZE = 32;
+constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
 
 constexpr float HOME_FAST_MM_S = 35.0f;
 constexpr float HOME_SLOW_MM_S = 5.0f;
@@ -73,10 +68,6 @@ constexpr uint16_t STARTUP_EVENT_TICKS = 200;
 constexpr uint16_t TIMER_ISR_GUARD_TICKS = 24;
 
 constexpr uint8_t MOTION_QUEUE_SIZE = 32;
-// Do not start consuming generated Delta blocks after the first block. Complex
-// 3D Delta paths spend substantial main-loop time in IK/chord-error math; a
-// deep initial reservoir prevents that computation from becoming visible as
-// step starvation and violent stop/restart motion.
 constexpr uint8_t MOTION_START_PREFILL_BLOCKS = 24;
 constexpr uint8_t SERIAL_LINE_SIZE = 192;
 constexpr uint32_t DEBUG_HEARTBEAT_MS = 5000UL;
