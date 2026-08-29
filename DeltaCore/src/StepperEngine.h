@@ -8,7 +8,10 @@ struct StepperStats {
   uint32_t virtual_events, blocks_loaded, queue_empty_stops, timer_guard_hits;
   uint32_t real_steps[3];
   uint32_t phase_anchors, phase_boundary_corrections, phase_faults;
+  uint32_t pulse_overlap_events, direction_overlap_events;
   uint16_t min_interval_ticks, max_interval_ticks, max_isr_entry_ticks;
+  uint16_t first_guard_requested_ticks, first_guard_tcnt_ticks;
+  uint16_t last_guard_requested_ticks, last_guard_tcnt_ticks;
 };
 class StepperEngine {
 public:
@@ -19,9 +22,6 @@ public:
   bool motorsEnabled() const { return motors_enabled_; }
   void servicePrefetch();
   void kickMotion();
-  // executionActive() answers only whether Timer1 is executing motion.  It is
-  // intentionally different from motionBusy(), which also includes buffered or
-  // prefetched work. Recovery state machines must use executionActive().
   bool executionActive() const { return mode_ == MODE_MOTION; }
   bool motionBusy() const;
   bool idle() const;
@@ -54,7 +54,10 @@ private:
   volatile uint8_t fault_;
   volatile int32_t motor_position_steps_[3];
   volatile uint32_t completed_step_events_, blocks_loaded_, queue_empty_stops_, timer_guard_hits_, real_steps_[3];
+  volatile uint32_t pulse_overlap_events_, direction_overlap_events_;
   volatile uint16_t min_interval_ticks_, max_interval_ticks_, max_isr_entry_ticks_;
+  volatile uint16_t first_guard_requested_ticks_, first_guard_tcnt_ticks_;
+  volatile uint16_t last_guard_requested_ticks_, last_guard_tcnt_ticks_;
   volatile uint8_t *step_out_[3], *dir_out_[3], *enable_out_[3], *endstop_in_[3];
   uint8_t step_mask_[3], dir_mask_[3], enable_mask_[3], endstop_mask_[3];
   volatile uint8_t active_pulse_axes_;
