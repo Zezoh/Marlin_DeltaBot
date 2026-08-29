@@ -26,6 +26,17 @@ static char line_buffer[cfg::SERIAL_LINE_SIZE];
 static uint8_t line_length = 0;
 static bool discard_line = false;
 
+// Commands received while a true ACK barrier (G28/M400) is active are queued
+// here instead of being executed out of order. Monitor/emergency commands stay
+// live so long moves do not starve the USB RX path.
+constexpr uint8_t DEFERRED_QUEUE_SIZE = 8;
+constexpr uint8_t DEFERRED_LINE_SIZE = 96;
+static char deferred_lines[DEFERRED_QUEUE_SIZE][DEFERRED_LINE_SIZE];
+static uint8_t deferred_head = 0;
+static uint8_t deferred_tail = 0;
+static uint8_t deferred_count = 0;
+static uint32_t deferred_overflows = 0;
+
 static uint32_t rx_lines = 0;
 static uint32_t parser_overflows = 0;
 static uint32_t unknown_commands = 0;
@@ -102,6 +113,42 @@ static char *normalizeCommand(char *line) {
   return line;
 }
 
+static bool commandStarts(const char *line, const char *cmd) {
+  const size_t n = strlen(cmd);
+  return strncmp(line, cmd, n) == 0 && (line[n] == '\0' || line[n] == ' ' || line[n] == '\t');
+}
+
+static bool barrierActive() { return home_ack_pending || m400_ack_pending; }
+
+static bool barrierImmediateCommand(const char *line) {
+  return commandStarts(line, "M112") || commandStarts(line, "STOP")
+      || commandStarts(line, "M105") || commandStarts(line, "M110")
+      || commandStarts(line, "M113");
+}
+
+static bool enqueueDeferred(const char *line) {
+  if (deferred_count >= DEFERRED_QUEUE_SIZE || strlen(line) >= DEFERRED_LINE_SIZE) {
+    ++deferred_overflows;
+    return false;
+  }
+  strcpy(deferred_lines[deferred_head], line);
+  deferred_head = uint8_t((deferred_head + 1U) % DEFERRED_QUEUE_SIZE);
+  ++deferred_count;
+  if (debug_level >= 2) {
+    Serial.print(F("DBG DEFER queued=")); Serial.print(deferred_count);
+    Serial.print(F(" cmd=")); Serial.println(line);
+  }
+  return true;
+}
+
+static bool popDeferred(char *out) {
+  if (!deferred_count) return false;
+  strcpy(out, deferred_lines[deferred_tail]);
+  deferred_tail = uint8_t((deferred_tail + 1U) % DEFERRED_QUEUE_SIZE);
+  --deferred_count;
+  return true;
+}
+
 static void printResetCause() {
   const uint8_t cause = bootResetCause();
   Serial.print(F("DBG BOOT session=")); Serial.print(bootSessionId());
@@ -154,6 +201,8 @@ static void printStatus() {
   Serial.print(F(" homed=")); Serial.print(motion.homed() ? 1 : 0);
   Serial.print(F(" pathq=")); Serial.print(motion.queuedMoves());
   Serial.print(F(" motorq=")); Serial.print(motion_queue.count());
+  Serial.print(F(" deferq=")); Serial.print(deferred_count);
+  Serial.print(F(" defer_ovf=")); Serial.print(deferred_overflows);
   Serial.print(F(" q_hi=")); Serial.print(motion_queue.highWater());
   Serial.print(F(" accel=")); Serial.print(motion.acceleration(), 1);
   Serial.print(F(" jerk=")); Serial.print(motion.jerkLimit(), 0);
@@ -203,7 +252,7 @@ static void printPerformance(const bool path_summary) {
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.4.0 motion settings:"));
+  Serial.println(F("DeltaCore v0.4.1 motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
   Serial.print(F("  jerk_limit=")); Serial.println(motion.jerkLimit(), 0);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
@@ -219,13 +268,7 @@ static void printMotionSettings() {
   Serial.print(F("  host_keepalive_ms=")); Serial.println(host_keepalive_ms);
   Serial.println(F("  trajectory=7-phase time-domain jerk-limited S-curve"));
   Serial.println(F("  stepgen=phase-continuous Q15 A/B/C + Q8 Timer1 interval ramp"));
-  Serial.println(F("  serial_rx=256 serial_tx=128 protocol=one-command-one-ACK"));
-  Serial.println(F("  boot_session=validated wear-level EEPROM ring32"));
-}
-
-static bool commandStarts(const char *line, const char *cmd) {
-  const size_t n = strlen(cmd);
-  return strncmp(line, cmd, n) == 0 && (line[n] == '\0' || line[n] == ' ' || line[n] == '\t');
+  Serial.println(F("  serial=barrier-aware deferred queue + immediate M105/M112"));
 }
 
 static void beginPathTracking() {
@@ -249,10 +292,15 @@ static void finishPendingBarrierAck() {
   if (m400_ack_pending) { m400_ack_pending = false; ack(); }
 }
 
-static void processCommand(char *raw_line) {
-  ++rx_lines;
+static void processCommand(char *raw_line, bool count_rx = true) {
+  if (count_rx) ++rx_lines;
   char *line = normalizeCommand(raw_line);
   if (!*line) { ack(); return; }
+
+  if (barrierActive() && !barrierImmediateCommand(line)) {
+    if (!enqueueDeferred(line)) errorAck(F("DEFER_QUEUE_FULL_OR_LINE_LONG"));
+    return;
+  }
 
   if (commandStarts(line, "M112") || commandStarts(line, "STOP")) {
     motion.emergencyStop(); ++command_errors;
@@ -261,6 +309,7 @@ static void processCommand(char *raw_line) {
 
   if (commandStarts(line, "M105")) { Serial.println(F("ok T:0.0 /0.0 B:0.0 /0.0")); return; }
   if (commandStarts(line, "M110")) { ack(); return; }
+  if (commandStarts(line, "M10")) { Serial.println(F("echo:M10 ignored (unsupported auxiliary output)")); ack(); return; }
 
   if (commandStarts(line, "G92")) {
     if (strchr(line, 'X') || strchr(line, 'Y') || strchr(line, 'Z')) {
@@ -288,7 +337,7 @@ static void processCommand(char *raw_line) {
   }
 
   if (commandStarts(line, "HELP")) {
-    Serial.println(F("DeltaCore v0.4.0: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
+    Serial.println(F("DeltaCore v0.4.1: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
     ack(); return;
   }
   if (commandStarts(line, "STATUS") || commandStarts(line, "M973")) { printStatus(); ack(); return; }
@@ -308,9 +357,9 @@ static void processCommand(char *raw_line) {
     Serial.println(F("echo:runtime motion defaults restored")); ack(); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.4.0 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
+    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.4.1 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
     Serial.print(bootSessionId());
-    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+ADAPTIVE_DELTA+PHASE_CONTINUOUS_ABC DEBUG:PERF+BOOT_SESSION SERIAL:ROBUST_ACK"));
+    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+ADAPTIVE_DELTA+PHASE_CONTINUOUS_ABC DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
     ack(); return;
   }
 
@@ -375,6 +424,18 @@ static void processCommand(char *raw_line) {
   Serial.print(F("error:UNKNOWN_COMMAND [")); Serial.print(line); Serial.println(F("]")); ack();
 }
 
+static void serviceDeferredCommands() {
+  if (barrierActive() || !deferred_count) return;
+  char cmd[DEFERRED_LINE_SIZE];
+  if (popDeferred(cmd)) {
+    if (debug_level >= 2) {
+      Serial.print(F("DBG DEFER run remaining=")); Serial.print(deferred_count);
+      Serial.print(F(" cmd=")); Serial.println(cmd);
+    }
+    processCommand(cmd, false);
+  }
+}
+
 static void serviceSerial() {
   while (Serial.available() > 0) {
     const char c = char(Serial.read());
@@ -415,6 +476,7 @@ static void serviceDebugHeartbeat() {
   Serial.print(F(" busy=")); Serial.print(motion.busy() ? 1 : 0);
   Serial.print(F(" pathq=")); Serial.print(motion.queuedMoves());
   Serial.print(F(" motorq=")); Serial.print(motion_queue.count());
+  Serial.print(F(" deferq=")); Serial.print(deferred_count);
   Serial.print(F(" rx=")); Serial.print(rx_lines);
   Serial.print(F(" guards=")); Serial.print(s.timer_guard_hits);
   Serial.print(F(" phase_corr=")); Serial.print(s.phase_boundary_corrections);
@@ -429,11 +491,11 @@ void setup() {
   motion.begin();
 
   Serial.println();
-  Serial.println(F("DeltaCore 0.4.0 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.4.1 - Mega2560 / MKS MINI v2.0"));
   printResetCause();
   Serial.println(F("Motion: jerk-limited look-ahead + adaptive Delta + phase-continuous A/B/C"));
   Serial.println(F("Stepper: persistent Q15 actuator phase + Q8 Timer1 event ramp; no float in ISR"));
-  Serial.println(F("Serial: RX256/TX128, one-command-one-ACK, G28/M400 keepalive barriers"));
+  Serial.println(F("Serial: barrier-aware deferred command queue; M105/M112 remain immediate"));
   Serial.println(F("Debug: M971 PERF includes phase continuity + timer/queue health"));
   Serial.println(F("SAFE BOOT: motors disabled, G28 required before G1"));
   Serial.println(F("ok READY"));
@@ -461,6 +523,7 @@ void loop() {
     finishPendingBarrierAck(); path_tracking = false;
   }
 
+  serviceDeferredCommands();
   serviceKeepalive();
   serviceDebugHeartbeat();
 }
