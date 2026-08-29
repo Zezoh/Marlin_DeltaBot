@@ -53,7 +53,7 @@ static void testPhaseContinuity() {
   const uint32_t n2 = 64;
   int32_t inc2[3];
   for (uint8_t a = 0; a < 3; ++a) inc2[a] = (end2[a] - end1[a]) / int32_t(n2);
-  assert(phase.begin(end1, end2, inc2, n2, false, actual));
+  assert(phase.beginContinuation(end2, inc2, n2, actual));
 
   uint32_t pos_a = 0, neg_b = 0;
   while (phase.active()) {
@@ -148,6 +148,6 @@ int main() {
   testJerkProfile();
   testPlanner();
   testKinematicsMetrics();
-  printf("PASS v0.4 jerk-limited lookahead + phase-continuous ABC + Delta metrics\n");
+  printf("PASS v0.4.4 fast generator + compact phase continuation + Delta metrics\n");
   return 0;
 }
