@@ -138,16 +138,11 @@ bool MotionController::initGeneratingMove(const uint8_t index) {
   generated_time_s_ = 0.0f;
   generated_distance_mm_ = 0.0f;
 
-  // Cache the exact tower start once per path move. Every generated segment then
-  // reuses the previous endpoint as its next start, removing 3 sqrtf() calls per block.
   if (!kinematics_.cartesianToTower(m.start, generated_tower_mm_)) return false;
   for (uint8_t axis = 0; axis < 3; ++axis)
     generated_motor_steps_[axis] = int32_t(lroundf(generated_tower_mm_[axis] * cfg::STEPS_PER_MM));
   if (!kinematics_.cartesianToSteps(m.target, final_motor_steps_)) return false;
 
-  // Use the path's precomputed worst tower curvature to derive a conservative
-  // chord-length ceiling: e ~= k*ds^2/8. 0.70 is deliberate margin for the
-  // sampled curvature estimate. Runtime segmentation now needs no IK chord probe.
   segment_length_limit_mm_ = cfg::MAX_SEGMENT_MM;
   if (m.max_tower_curvature > 1.0e-7f) {
     float chord_ds = sqrtf((8.0f * cfg::MAX_TOWER_CHORD_ERROR_MM) / m.max_tower_curvature) * 0.70f;
@@ -250,11 +245,12 @@ bool MotionController::generateOneSegment() {
   }
 
   MotorBlock block = {};
+  int32_t phase_start_q15[3];
   float continuous_master_steps = 0.0f;
   for (uint8_t axis = 0; axis < 3; ++axis) {
-    block.phase_start_q15[axis] = towerPhaseQ15(generated_tower_mm_[axis]);
+    phase_start_q15[axis] = towerPhaseQ15(generated_tower_mm_[axis]);
     block.phase_end_q15[axis] = towerPhaseQ15(tower_end[axis]);
-    const int32_t phase_delta = block.phase_end_q15[axis] - block.phase_start_q15[axis];
+    const int32_t phase_delta = block.phase_end_q15[axis] - phase_start_q15[axis];
     const float continuous_steps = fabsf(float(phase_delta) / float(PHASE_ONE));
     if (continuous_steps > continuous_master_steps) continuous_master_steps = continuous_steps;
     if (phase_delta >= 0) block.direction_bits |= uint8_t(1U << axis);
@@ -282,7 +278,7 @@ bool MotionController::generateOneSegment() {
   if (!block.virtual_events) block.virtual_events = 1U;
 
   for (uint8_t axis = 0; axis < 3; ++axis) {
-    const int32_t delta = block.phase_end_q15[axis] - block.phase_start_q15[axis];
+    const int32_t delta = block.phase_end_q15[axis] - phase_start_q15[axis];
     block.phase_inc_q15[axis] = delta / int32_t(block.virtual_events);
   }
 
@@ -309,7 +305,12 @@ bool MotionController::generateOneSegment() {
     block.interval_delta_q8 = (diff * 256L) / int32_t(block.virtual_events - 1U);
   }
 
-  if (phase_anchor_pending_) block.flags |= BLOCK_FLAG_PHASE_ANCHOR;
+  if (phase_anchor_pending_) {
+    if (!stepper_.setPhaseAnchorQ15(phase_start_q15)) {
+      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return false;
+    }
+    block.flags |= BLOCK_FLAG_PHASE_ANCHOR;
+  }
   if (!queue_.enqueue(block)) return false;
   phase_anchor_pending_ = false;
 
