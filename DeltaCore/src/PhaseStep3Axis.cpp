@@ -75,6 +75,27 @@ bool PhaseStep3Axis::begin(const int32_t phase_start_q15[3],
   return true;
 }
 
+bool PhaseStep3Axis::beginContinuation(const int32_t phase_end_q15[3],
+                                       const int32_t phase_inc_q15[3],
+                                       const uint32_t total_events,
+                                       const int32_t actual_steps[3]) {
+  if (!valid_ || !total_events) {
+    valid_ = false;
+    return false;
+  }
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    if (actual_steps[axis] != output_steps_[axis]) {
+      valid_ = false;
+      return false;
+    }
+    phase_end_q15_[axis] = phase_end_q15[axis];
+    phase_inc_q15_[axis] = phase_inc_q15[axis];
+  }
+  total_events_ = total_events;
+  completed_events_ = 0;
+  return true;
+}
+
 PhaseStepMask PhaseStep3Axis::next() {
   PhaseStepMask out = {0,0};
   if (!valid_ || !active()) return out;
