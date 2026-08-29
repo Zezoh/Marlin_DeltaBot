@@ -1,4 +1,4 @@
-# DeltaCore v0.5.5 final clean-tip verification
+# DeltaCore v0.5.5 + cycle-accurate RAMPS 1.4 HIL verification
 name: DeltaCore AVR Build
 
 on:
@@ -56,6 +56,24 @@ jobs:
       - name: Build Mega2560 firmware
         run: pio run --project-dir DeltaCore -e megaatmega2560
 
+      - name: Install simavr HIL runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y simavr libsimavr-dev pkg-config
+
+      - name: Build RAMPS 1.4 three-stepper HIL simulator
+        run: |
+          CFLAGS="$(pkg-config --cflags simavr 2>/dev/null || echo -I/usr/include/simavr)"
+          LIBS="$(pkg-config --libs simavr 2>/dev/null || echo '-lsimavr -lelf -lpthread')"
+          cc -std=c11 -O2 -Wall -Wextra $CFLAGS \
+            DeltaCore/test/simavr_ramps14_hil.c \
+            -o /tmp/deltacore_ramps14_hil $LIBS -lm
+
+      - name: Cycle-accurate ATmega2560 + RAMPS 1.4 + 3xA4988 HIL
+        run: |
+          timeout 180s /tmp/deltacore_ramps14_hil \
+            DeltaCore/.pio/build/megaatmega2560/firmware.elf
+
       - name: Static RAM symbol map
         run: |
           $HOME/.platformio/packages/toolchain-atmelavr/bin/avr-nm \
@@ -67,7 +85,7 @@ jobs:
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560-v0.5.5
+          name: DeltaCore-Mega2560-v0.5.5-HIL
           path: |
             DeltaCore/.pio/build/megaatmega2560/firmware.hex
             DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
