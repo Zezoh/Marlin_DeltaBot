@@ -41,6 +41,10 @@ constexpr uint8_t MAX_SEGMENT_SPLITS = 5;
 // boundary. This is intentionally modest for the 16 MHz AVR.
 constexpr float PHASE_MIN_EVENT_HZ = 800.0f;
 
+// Retained only so older M503 tooling can print the previous v0.3 value while
+// transitioning to v0.4. The v0.4 generator no longer uses this threshold.
+constexpr uint8_t MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT = 48;
+
 // Burst look-ahead queue. M400 / FLUSH starts it immediately.
 constexpr uint8_t PATH_QUEUE_SIZE = 16;
 constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
