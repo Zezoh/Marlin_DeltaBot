@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "JerkProfile.h"
 #include "Kinematics.h"
 #include "MotionQueue.h"
 #include "PathPlanner.h"
@@ -46,9 +47,10 @@ public:
   void commandPosition(float xyz[3]) const;
   float feedrate() const { return default_feed_mm_s_; }
   float acceleration() const { return acceleration_mm_s2_; }
+  float jerkLimit() const { return cfg::DEFAULT_JERK_MM_S3; }
   bool setAcceleration(float mm_s2);
 
-  // -1 = adaptive auto, 0 = off, 1 = x2 virtual timing, 2 = x4.
+  // -1 = adaptive auto, 0 = off, 1 = x2 phase timing, 2 = x4.
   bool setSmoothingMode(int8_t mode);
   int8_t smoothingMode() const { return smoothing_mode_; }
 
@@ -73,14 +75,14 @@ private:
   bool batch_active_;
   bool generation_complete_;
   bool flush_requested_;
+  bool phase_anchor_pending_;
   uint32_t last_enqueue_ms_;
   uint8_t generating_index_;
+  float generated_time_s_;
   float generated_distance_mm_;
   int32_t generated_motor_steps_[3];
   int32_t final_motor_steps_[3];
-  float profile_peak_mm_s_;
-  float profile_accel_distance_mm_;
-  float profile_decel_distance_mm_;
+  JerkProfile profile_;
 
   float acceleration_mm_s2_;
   float default_feed_mm_s_;
@@ -89,10 +91,8 @@ private:
   bool startBatch();
   bool initGeneratingMove(uint8_t index);
   bool generateOneSegment();
-  float profileSpeed(const PathMove &move, float distance_mm) const;
-  float adaptiveSegmentLength(const PathMove &move, float distance_mm) const;
+  float adaptiveSegmentDuration(const PathMove &move, float time_s) const;
   uint8_t smoothingLevelForTicks(uint32_t base_ticks) const;
-  static float smootherStep5(float u);
   bool validatePath(const float start[3], const float target[3]) const;
   bool towerWithinHome(const int32_t tower_steps[3]) const;
   void finishHome();
