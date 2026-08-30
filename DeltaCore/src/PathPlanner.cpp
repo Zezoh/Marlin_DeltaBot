@@ -10,11 +10,22 @@ static float minf3(const float a, const float b, const float c) {
 }
 
 PathPlanner::PathPlanner(Kinematics &kinematics)
-  : kinematics_(kinematics), moves_{}, head_(0), count_(0) {}
+  : kinematics_(kinematics), moves_{}, head_(0), count_(0),
+    plan_phase_(PLAN_IDLE), plan_index_(0),
+    plan_first_entry_(cfg::MIN_PROFILE_SPEED_MM_S),
+    plan_next_entry_(cfg::MIN_PROFILE_SPEED_MM_S) {}
+
+void PathPlanner::cancelPlan() {
+  plan_phase_ = PLAN_IDLE;
+  plan_index_ = 0;
+  plan_first_entry_ = cfg::MIN_PROFILE_SPEED_MM_S;
+  plan_next_entry_ = cfg::MIN_PROFILE_SPEED_MM_S;
+}
 
 void PathPlanner::clear() {
   head_ = 0;
   count_ = 0;
+  cancelPlan();
 }
 
 bool PathPlanner::prepareMoveWithMetrics(PathMove &m, const float start[3], const float target[3],
@@ -84,7 +95,7 @@ bool PathPlanner::prepareMove(PathMove &m, const float start[3], const float tar
 
 bool PathPlanner::enqueue(const float start[3], const float target[3], const float feed_mm_s,
                           const float requested_accel_mm_s2) {
-  if (full()) return false;
+  if (full() || planning()) return false;
   PathMove candidate;
   if (!prepareMove(candidate, start, target, feed_mm_s, requested_accel_mm_s2)) return false;
   const uint8_t tail = physicalIndex(count_);
@@ -95,7 +106,7 @@ bool PathPlanner::enqueue(const float start[3], const float target[3], const flo
 
 bool PathPlanner::enqueuePrepared(const float start[3], const float target[3], const float feed_mm_s,
                                   const float requested_accel_mm_s2, const MotionMetrics &metrics) {
-  if (full()) return false;
+  if (full() || planning()) return false;
   PathMove candidate;
   if (!prepareMoveWithMetrics(candidate, start, target, feed_mm_s, requested_accel_mm_s2, metrics))
     return false;
@@ -106,7 +117,7 @@ bool PathPlanner::enqueuePrepared(const float start[3], const float target[3], c
 }
 
 bool PathPlanner::popFront(PathMove *out) {
-  if (!count_) return false;
+  if (!count_ || planning()) return false;
   if (out) *out = moves_[head_];
   head_ = uint8_t((uint16_t(head_) + 1U) % cfg::PATH_QUEUE_SIZE);
   --count_;
@@ -134,42 +145,92 @@ float PathPlanner::junctionSpeed(const PathMove &prev, const PathMove &next) {
   return v;
 }
 
-bool PathPlanner::plan(const float first_entry_speed_mm_s) {
-  if (!count_) return false;
-
+bool PathPlanner::beginPlan(const float first_entry_speed_mm_s) {
+  if (!count_ || planning()) return false;
   float first_entry = first_entry_speed_mm_s;
   if (first_entry < cfg::MIN_PROFILE_SPEED_MM_S) first_entry = cfg::MIN_PROFILE_SPEED_MM_S;
   if (first_entry > move(0).nominal_speed_mm_s) first_entry = move(0).nominal_speed_mm_s;
+  plan_first_entry_ = first_entry;
   move(0).entry_speed_mm_s = first_entry;
-
-  for (uint8_t i = 1; i < count_; ++i)
-    move(i).entry_speed_mm_s = junctionSpeed(move(i - 1), move(i));
-
-  float next_entry = cfg::MIN_PROFILE_SPEED_MM_S;
-  for (int16_t i = int16_t(count_) - 1; i >= 1; --i) {
-    PathMove &m = move(uint8_t(i));
-    const float max_from_decel = JerkProfile::maxReachableSpeed(
-      next_entry, m.length_mm, m.nominal_speed_mm_s, m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
-    if (m.entry_speed_mm_s > max_from_decel) m.entry_speed_mm_s = max_from_decel;
-    if (m.entry_speed_mm_s > m.nominal_speed_mm_s) m.entry_speed_mm_s = m.nominal_speed_mm_s;
-    next_entry = m.entry_speed_mm_s;
-  }
-
-  move(0).entry_speed_mm_s = first_entry;
-  for (uint8_t i = 1; i < count_; ++i) {
-    const PathMove &prev = move(i - 1);
-    const float reachable = JerkProfile::maxReachableSpeed(
-      prev.entry_speed_mm_s, prev.length_mm, prev.nominal_speed_mm_s,
-      prev.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
-    if (move(i).entry_speed_mm_s > reachable) move(i).entry_speed_mm_s = reachable;
-  }
-
-  for (uint8_t i = 0; i < count_; ++i) {
-    move(i).exit_speed_mm_s = (i + 1U < count_)
-      ? move(i + 1U).entry_speed_mm_s
-      : cfg::MIN_PROFILE_SPEED_MM_S;
-  }
+  plan_index_ = 1;
+  plan_phase_ = PLAN_JUNCTIONS;
   return true;
+}
+
+PlannerStepResult PathPlanner::servicePlan() {
+  if (!planning() || !count_) return PLANNER_STEP_ERROR;
+
+  if (plan_phase_ == PLAN_JUNCTIONS) {
+    if (plan_index_ < int8_t(count_)) {
+      const uint8_t i = uint8_t(plan_index_);
+      move(i).entry_speed_mm_s = junctionSpeed(move(uint8_t(i - 1U)), move(i));
+      ++plan_index_;
+      return PLANNER_STEP_WORKING;
+    }
+    plan_next_entry_ = cfg::MIN_PROFILE_SPEED_MM_S;
+    plan_index_ = int8_t(count_) - 1;
+    plan_phase_ = PLAN_REVERSE;
+    return PLANNER_STEP_WORKING;
+  }
+
+  if (plan_phase_ == PLAN_REVERSE) {
+    if (plan_index_ >= 1) {
+      PathMove &m = move(uint8_t(plan_index_));
+      const float max_from_decel = JerkProfile::maxReachableSpeed(
+        plan_next_entry_, m.length_mm, m.nominal_speed_mm_s,
+        m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
+      if (m.entry_speed_mm_s > max_from_decel) m.entry_speed_mm_s = max_from_decel;
+      if (m.entry_speed_mm_s > m.nominal_speed_mm_s) m.entry_speed_mm_s = m.nominal_speed_mm_s;
+      plan_next_entry_ = m.entry_speed_mm_s;
+      --plan_index_;
+      return PLANNER_STEP_WORKING;
+    }
+    move(0).entry_speed_mm_s = plan_first_entry_;
+    plan_index_ = 1;
+    plan_phase_ = PLAN_FORWARD;
+    return PLANNER_STEP_WORKING;
+  }
+
+  if (plan_phase_ == PLAN_FORWARD) {
+    if (plan_index_ < int8_t(count_)) {
+      const uint8_t i = uint8_t(plan_index_);
+      const PathMove &prev = move(uint8_t(i - 1U));
+      const float reachable = JerkProfile::maxReachableSpeed(
+        prev.entry_speed_mm_s, prev.length_mm, prev.nominal_speed_mm_s,
+        prev.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
+      if (move(i).entry_speed_mm_s > reachable) move(i).entry_speed_mm_s = reachable;
+      ++plan_index_;
+      return PLANNER_STEP_WORKING;
+    }
+    plan_index_ = 0;
+    plan_phase_ = PLAN_EXITS;
+    return PLANNER_STEP_WORKING;
+  }
+
+  if (plan_phase_ == PLAN_EXITS) {
+    if (plan_index_ < int8_t(count_)) {
+      const uint8_t i = uint8_t(plan_index_);
+      move(i).exit_speed_mm_s = (i + 1U < count_)
+        ? move(uint8_t(i + 1U)).entry_speed_mm_s
+        : cfg::MIN_PROFILE_SPEED_MM_S;
+      ++plan_index_;
+      return PLANNER_STEP_WORKING;
+    }
+    cancelPlan();
+    return PLANNER_STEP_DONE;
+  }
+
+  cancelPlan();
+  return PLANNER_STEP_ERROR;
+}
+
+bool PathPlanner::plan(const float first_entry_speed_mm_s) {
+  if (!beginPlan(first_entry_speed_mm_s)) return false;
+  while (true) {
+    const PlannerStepResult r = servicePlan();
+    if (r == PLANNER_STEP_DONE) return true;
+    if (r == PLANNER_STEP_ERROR) return false;
+  }
 }
 
 void PathPlanner::latestTarget(float xyz[3]) const {
