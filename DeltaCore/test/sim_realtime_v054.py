@@ -10,16 +10,12 @@ PATH_CAP = 16
 PENDING_CAP = 46
 ADMISSION_LIMIT = PATH_CAP + PENDING_CAP - 2
 LOOKAHEAD_RESERVE = 4
-MOTOR_CAP = 63  # 64-slot ring keeps one slot empty
+MOTOR_CAP = 63
 LOW = 24
 TARGET = 56
 MAX_BURST = 12
 BUDGET_US = 6000
 GEN_US = 260
-# Real AVR profiling on the v0.5.8 hardware candidate measured the expensive
-# planner/fill path at just under 10 ms inclusive. Model that worst observed
-# stall instead of the old optimistic 650 us estimate so UART capacity is
-# validated against real main-loop blocking time.
 PLAN_US = 10000
 PARSE_LINE_US = 90
 ACK_TX_US = 160
@@ -30,7 +26,6 @@ def make_commands(move_count, rng, include_m105=True):
     cmds=[]
     for i in range(move_count):
         x=rng.randint(-40,40); y=rng.randint(-40,40)
-        # Each accepted move carries a deterministic synthetic segment count.
         segs=rng.randint(2,14)
         cmds.append((f'G1 X{x} Y{y} F6000\n'.encode(), 'G1', segs))
         if include_m105 and i and i % 37 == 0:
@@ -47,24 +42,21 @@ class RealtimeSim:
         self.paced=paced
         self.host_window=host_window
         self.outstanding=0
-        self.wire=deque()          # serialized bytes waiting on UART wire
+        self.wire=deque()
         self.wire_next_us=0.0
         self.rx=deque()
         self.line=bytearray()
-        self.line_meta=deque()     # command metadata in send order
-
-        self.path=deque()          # segment counts for prepared moves
+        self.line_meta=deque()
+        self.path=deque()
         self.pending=deque()
         self.current_segments=0
         self.accepted=0
         self.executed=0
         self.closed=False
-
-        self.motorq=deque()        # block durations in microseconds
+        self.motorq=deque()
         self.motor_started=False
         self.motor_end_us=None
         self.starves=0
-
         self.now=0.0
         self.max_rx=0
         self.max_pending=0
@@ -110,7 +102,6 @@ class RealtimeSim:
             self.now=self.motor_end_us
             self.motorq.popleft()
             self.motor_end_us=None
-            # Queue empty while future generated work still exists = real starvation.
             if not self.motorq and (self.current_segments or self.path or self.pending or self.accepted>self.executed):
                 self.starves += 1
                 self.motor_started=False
@@ -126,18 +117,25 @@ class RealtimeSim:
     def ack(self):
         if self.paced:
             self.acks_due.append(self.now+ACK_TX_US)
-        else:
-            # In raw burst mode the sender ignores ACKs; account only for bookkeeping.
-            if self.outstanding:
-                self.outstanding -= 1
+        elif self.outstanding:
+            self.outstanding -= 1
+
+    def ingress_blocked(self):
+        return (not self.line and (len(self.path)+len(self.pending)) >= ADMISSION_LIMIT)
 
     def serial_slice(self):
+        initial=len(self.rx)
+        line_budget=2; byte_budget=96
+        if initial >= 192:
+            line_budget=16; byte_budget=448
+        elif initial >= 96:
+            line_budget=10; byte_budget=320
+        elif initial >= 48:
+            line_budget=6; byte_budget=192
+
         lines=0; consumed=0
-        while self.rx and lines<2 and consumed<96:
-            # Firmware admission control: only pause at a line boundary and
-            # only when the compact motion ingress is genuinely near full.
-            # Crucially, no ACK is generated while paused.
-            if not self.line and (len(self.path)+len(self.pending)) >= ADMISSION_LIMIT:
+        while self.rx and lines<line_budget and consumed<byte_budget:
+            if self.ingress_blocked():
                 return
             c=self.rx.popleft(); consumed+=1
             self.advance(2)
@@ -171,7 +169,6 @@ class RealtimeSim:
             elif kind=='M400':
                 if text!='M400': raise AssertionError('corrupt M400 '+repr(text))
                 self.closed=True
-                # Real firmware withholds M400 ok until motion completion.
             else:
                 raise AssertionError(kind)
         self.max_rx=max(self.max_rx,len(self.rx))
@@ -185,7 +182,6 @@ class RealtimeSim:
         return bool(self.path) and (self.closed or len(self.path)>LOOKAHEAD_RESERVE)
 
     def new_block_duration(self):
-        # Deliberately harsh: actual v0.5 blocks in supplied logs span a broad range.
         return self.r.randint(1250,10000)
 
     def produce(self):
@@ -193,29 +189,27 @@ class RealtimeSim:
         urgent=len(self.motorq)<LOW
         limit=MAX_BURST if urgent else 1
         spent=0; produced=0
-
         while produced<limit and len(self.motorq)<MOTOR_CAP:
             if self.current_segments==0:
                 if not self.can_commit(): break
                 self.advance(PLAN_US); spent+=PLAN_US
                 self.current_segments=self.path[0]
-
             if produced and spent+GEN_US>BUDGET_US: break
             self.advance(GEN_US); spent+=GEN_US
             self.motorq.append(self.new_block_duration())
             self.max_motorq=max(self.max_motorq,len(self.motorq))
             self.current_segments-=1; produced+=1
-
             if self.current_segments==0:
                 self.path.popleft(); self.executed+=1; self.fill_planner()
-
             if not self.motor_started and (len(self.motorq)>=START_PREFILL or (self.closed and not self.path and not self.pending and not self.current_segments)):
                 self.motor_started=True
                 self.motor_end_us=None
-
             if len(self.motorq)>=TARGET: break
             if len(self.motorq)>=LOW and self.rx: break
             if spent>=BUDGET_US: break
+
+    def motion_active(self):
+        return bool(self.current_segments or self.path or self.pending or self.accepted>self.executed or self.motor_started)
 
     def done(self):
         return (self.closed and not self.commands and not self.wire and not self.rx and not self.line
@@ -227,7 +221,18 @@ class RealtimeSim:
         for _ in range(8_000_000):
             self.host_arrive_until(self.now)
             self.serial_slice()
-            self.produce()
+
+            urgent_motion=self.motor_started and len(self.motorq)<LOW
+            rx_pending=bool(self.rx)
+            if (not rx_pending) or self.ingress_blocked() or urgent_motion:
+                self.produce()
+
+            if self.rx:
+                self.serial_slice()
+
+            if not self.rx and self.motor_started and len(self.motorq)<LOW:
+                self.produce()
+
             self.advance(250)
             if self.done():
                 while self.motorq:
@@ -244,9 +249,6 @@ class RealtimeSim:
 
 
 def run_burst():
-    # Raw unpaced sender: bounded by finite AVR memory by definition. Validate the
-    # real-world paste sizes that exposed corruption, including M105 polls, using
-    # the actual 512-byte RX reservoir and measured ~10 ms planner stall.
     for moves in (45,65,75):
         worst=(0,0,0)
         for seed in range(30):
@@ -267,7 +269,7 @@ def run_credit_stream():
 def main():
     run_burst()
     run_credit_stream()
-    print('PASS realtime UART + M105 + measured planner-stall model: no corruption, overflow, reorder, or motor starvation')
+    print('PASS RX-pressure-aware UART scheduler + M105 + 10ms planner stalls: no corruption, overflow, reorder, or motor starvation')
 
 if __name__=='__main__':
     main()
