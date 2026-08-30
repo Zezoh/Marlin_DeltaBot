@@ -80,7 +80,10 @@ constexpr uint8_t MOTION_REFILL_LOW_WATER = 24;
 constexpr uint8_t MOTION_REFILL_TARGET = 56;
 constexpr uint8_t MOTION_REFILL_MAX_BURST = 12;
 constexpr uint16_t MOTION_REFILL_BUDGET_US = 6000;
-constexpr uint8_t SERIAL_LINE_SIZE = 192;
+
+// 128 bytes is enough for normal G-code while keeping the parser's mutable
+// line buffer small. Oversize lines are still rejected explicitly and safely.
+constexpr uint8_t SERIAL_LINE_SIZE = 128;
 constexpr uint32_t DEBUG_HEARTBEAT_MS = 5000UL;
 
 } // namespace cfg
