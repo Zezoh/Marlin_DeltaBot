@@ -33,12 +33,10 @@ bool PathPlanner::prepareMove(PathMove &m, const float start[3], const float tar
 
   MotionMetrics metrics;
   if (!kinematics_.motionMetrics(m.start, m.unit, m.length_mm, metrics)) return false;
-  m.max_tower_gain = metrics.max_gain;
   m.max_tower_curvature = metrics.max_curvature;
 
   if (feed_mm_s < 1.0f) feed_mm_s = 1.0f;
   if (feed_mm_s > cfg::MAX_CARTESIAN_FEED_MM_S) feed_mm_s = cfg::MAX_CARTESIAN_FEED_MM_S;
-  m.requested_speed_mm_s = feed_mm_s;
 
   const float tower_speed_limit = cfg::MAX_TOWER_SPEED_MM_S / metrics.max_gain;
   float curvature_speed_limit = cfg::MAX_CARTESIAN_FEED_MM_S;
@@ -60,7 +58,6 @@ bool PathPlanner::prepareMove(PathMove &m, const float start[3], const float tar
   m.accel_mm_s2 = requested_accel_mm_s2 < tower_accel_limit ? requested_accel_mm_s2 : tower_accel_limit;
   if (m.accel_mm_s2 < 50.0f) m.accel_mm_s2 = 50.0f;
 
-  m.max_entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S;
   m.entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S;
   m.exit_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S;
   return true;
@@ -112,13 +109,10 @@ bool PathPlanner::plan(const float first_entry_speed_mm_s) {
   float first_entry = first_entry_speed_mm_s;
   if (first_entry < cfg::MIN_PROFILE_SPEED_MM_S) first_entry = cfg::MIN_PROFILE_SPEED_MM_S;
   if (first_entry > move(0).nominal_speed_mm_s) first_entry = move(0).nominal_speed_mm_s;
-  move(0).max_entry_speed_mm_s = first_entry;
   move(0).entry_speed_mm_s = first_entry;
 
-  for (uint8_t i = 1; i < count_; ++i) {
-    move(i).max_entry_speed_mm_s = junctionSpeed(move(i - 1), move(i));
-    move(i).entry_speed_mm_s = move(i).max_entry_speed_mm_s;
-  }
+  for (uint8_t i = 1; i < count_; ++i)
+    move(i).entry_speed_mm_s = junctionSpeed(move(i - 1), move(i));
 
   float next_entry = cfg::MIN_PROFILE_SPEED_MM_S;
   for (int16_t i = int16_t(count_) - 1; i >= 1; --i) {
