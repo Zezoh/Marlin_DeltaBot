@@ -57,10 +57,6 @@ public:
 private:
   enum HomeState : uint8_t { HOME_IDLE = 0, HOME_FAST, HOME_BACKOFF, HOME_SLOW };
 
-  // Compact command reservoir, not trajectory state. X/Y fit signed Q8.8 over
-  // the ±85 mm printable radius; Z fits unsigned Q8.8 over 0..225 mm. The
-  // 1/256 mm = 0.00390625 mm resolution is finer than one 80-step/mm tower
-  // step (0.0125 mm). Feed remains unsigned Q8.8 mm/s.
   struct PendingMove {
     int16_t x_q8_8;
     int16_t y_q8_8;
@@ -86,6 +82,7 @@ private:
   bool motion_started_;
   bool generating_move_;
   bool planner_plan_valid_;
+  bool profile_prepare_active_;
   bool flush_requested_;
   uint32_t last_enqueue_ms_;
   float carry_entry_speed_mm_s_;
