@@ -8,7 +8,6 @@ namespace deltacore {
 
 static constexpr uint8_t LOOKAHEAD_RESERVE_MOVES = 4;
 static constexpr uint8_t LOOKAHEAD_REFILL_TRIGGER_MOVES = 8;
-static constexpr uint8_t PATH_VALIDATION_LAST_SAMPLE = 16;
 static constexpr uint8_t METRIC_SAMPLE_COUNT = 5;
 static constexpr float Q8_SCALE = 256.0f;
 static constexpr float Q8_INV = 1.0f / Q8_SCALE;
@@ -184,16 +183,11 @@ bool MotionController::fillPlannerFromPending() {
     pending_metrics_.max_curvature = 0.0f;
   }
 
-  if (pending_validation_sample_ <= PATH_VALIDATION_LAST_SAMPLE) {
-    const float u = float(pending_validation_sample_) / float(PATH_VALIDATION_LAST_SAMPLE);
-    const float point[3] = {
-      start[0] + (target[0] - start[0]) * u,
-      start[1] + (target[1] - start[1]) * u,
-      start[2] + (target[2] - start[2]) * u
-    };
-    int32_t tower[3];
-    if (!kinematics_.cartesianToSteps(point, tower) || !towerWithinHome(tower)) return false;
-    ++pending_validation_sample_;
+  // Exact continuous-line validation replaces the old 17 sampled IK checks.
+  // Run it once, then yield immediately so the scheduler remains cooperative.
+  if (pending_validation_sample_ == 0U) {
+    if (!kinematics_.pathWithinTowerHome(start, target, home_motor_steps_)) return false;
+    pending_validation_sample_ = 1U;
     return true;
   }
 
