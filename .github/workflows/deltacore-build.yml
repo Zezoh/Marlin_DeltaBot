@@ -28,6 +28,9 @@ jobs:
           grep -q 'VERSION:0.5.8' DeltaCore/src/main.cpp
           grep -q 'DeltaCore 0.5.8' DeltaCore/src/main.cpp
 
+      - name: Real HIL runner syntax sanity
+        run: python3 -m py_compile DeltaCore/tools/real_hil.py
+
       - name: Host motion tests
         run: |
           g++ -std=c++11 -Wall -Wextra -pedantic -IDeltaCore/src \
