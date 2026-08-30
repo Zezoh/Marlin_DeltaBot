@@ -157,9 +157,6 @@ bool MotionController::fillPlannerFromPending() {
     pending_metrics_.max_curvature = 0.0f;
   }
 
-  // Preserve the original 17-point path validation exactly, but evaluate one
-  // point per scheduler pass. No command reaches the planner until every point
-  // has passed both Delta IK and tower-home limits.
   if (pending_validation_sample_ <= PATH_VALIDATION_LAST_SAMPLE) {
     const float u = float(pending_validation_sample_) / float(PATH_VALIDATION_LAST_SAMPLE);
     const float point[3] = {
@@ -183,9 +180,6 @@ bool MotionController::fillPlannerFromPending() {
   if (length_mm < 0.0005f) return false;
   for (uint8_t a = 0; a < 3; ++a) unit[a] /= length_mm;
 
-  // Preserve the original five motion-metric sample positions exactly. One
-  // sample still evaluates all three towers, but the main loop regains control
-  // before the next sample.
   if (pending_metric_sample_ < METRIC_SAMPLE_COUNT) {
     if (!kinematics_.motionMetricsSample(start, unit, length_mm,
                                          pending_metric_sample_, pending_metrics_)) return false;
@@ -193,11 +187,10 @@ bool MotionController::fillPlannerFromPending() {
     return true;
   }
 
-  // During active generation we may precompute all expensive validation and
-  // metrics, but defer the actual planner mutation until a move boundary. This
-  // preserves the rolling-lookahead semantics and keeps the current trajectory
-  // solution immutable.
-  if (generating_move_) return true;
+  // Never mutate the planner while the active trajectory or a cooperative
+  // lookahead pass is using it. Expensive work can be fully precomputed here,
+  // then committed on the next safe boundary.
+  if (generating_move_ || planner_.planning()) return true;
 
   const float feed_mm_s = float(p.feed_q8_8) / 256.0f;
   if (!planner_.enqueuePrepared(start, p.target, feed_mm_s, acceleration_mm_s2_, pending_metrics_))
@@ -229,9 +222,6 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   }
   if (delta2 < 0.00000025f) return last_request_error_ = REQUEST_OK;
 
-  // Deep path/tower validation is deliberately deferred to the cooperative
-  // pending-preparation state machine. The cheap Cartesian soft bound remains
-  // synchronous so obviously invalid commands are rejected immediately.
   if (!enqueuePending(target_xyz, feed_mm_s))
     return last_request_error_ = REQUEST_QUEUE_FULL;
 
@@ -279,11 +269,8 @@ bool MotionController::initGeneratingMove(const PathMove &m) {
 }
 
 bool MotionController::startNextPlannedMove() {
-  if (generating_move_ || !canCommitNextMove()) return false;
-  if (!planner_plan_valid_) {
-    if (!planner_.plan(carry_entry_speed_mm_s_)) return false;
-    planner_plan_valid_ = true;
-  }
+  if (generating_move_ || !canCommitNextMove() || !planner_plan_valid_ || planner_.planning())
+    return false;
   const PathMove &m = planner_.move(0);
   committed_exit_speed_mm_s_ = m.exit_speed_mm_s;
   if (!initGeneratingMove(m)) return false;
@@ -476,10 +463,6 @@ void MotionController::service() {
     return;
   }
 
-  // Precompute pending work while a current move is generating, but final
-  // planner insertion is deferred inside fillPlannerFromPending() until the
-  // move boundary. This uses otherwise available main-loop time without
-  // mutating the active lookahead solution.
   const bool may_prepare_pending = pending_count_ &&
     (!stream_active_ || planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES);
   if (may_prepare_pending && !fillPlannerFromPending()) {
@@ -487,15 +470,26 @@ void MotionController::service() {
   }
 
   if (!stream_active_ && !planner_.empty()) {
-    // The 200 ms host hold must not close the initial lookahead while accepted
-    // commands are still merely awaiting cooperative preparation. A long burst
-    // therefore starts at a full 16-move window exactly as before.
     const bool all_ingress_prepared = !pending_count_ && !pending_prepare_active_;
     if (planner_.full() || (all_ingress_prepared && streamClosed())) stream_active_ = true;
   }
 
   if (motion_started_ && stream_active_ && !stepper_.executionActive())
     motion_started_ = false;
+
+  // Cooperative rolling lookahead. Each call performs at most one junction,
+  // reverse-pass, forward-pass or exit element. The current JerkProfile remains
+  // immutable while this prepares the next move boundary.
+  if (!generating_move_ && stream_active_ && canCommitNextMove() && !planner_plan_valid_) {
+    if (!planner_.planning() && !planner_.beginPlan(carry_entry_speed_mm_s_)) {
+      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
+    }
+    const PlannerStepResult plan_result = planner_.servicePlan();
+    if (plan_result == PLANNER_STEP_ERROR) {
+      stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
+    }
+    if (plan_result == PLANNER_STEP_DONE) planner_plan_valid_ = true;
+  }
 
   const bool refill_urgent = queue_.count() < cfg::MOTION_REFILL_LOW_WATER;
   const uint8_t burst_limit = refill_urgent ? cfg::MOTION_REFILL_MAX_BURST : 1U;
@@ -504,6 +498,7 @@ void MotionController::service() {
   while (produced < burst_limit && queue_.freeSlots() > 1U) {
     if (!generating_move_) {
       if (!(stream_active_ && canCommitNextMove())) break;
+      if (!planner_plan_valid_ || planner_.planning()) break;
       if (!startNextPlannedMove()) {
         stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
       }
