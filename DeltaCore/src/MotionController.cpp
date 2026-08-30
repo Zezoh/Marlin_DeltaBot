@@ -138,18 +138,21 @@ bool MotionController::dequeuePending(PendingMove &move) {
 }
 
 bool MotionController::fillPlannerFromPending() {
-  bool appended = false;
-  while (!planner_.full() && pending_count_) {
-    PendingMove p;
-    if (!dequeuePending(p)) break;
-    float start[3];
-    if (!planner_.empty()) planner_.latestTarget(start);
-    else for (uint8_t a = 0; a < 3; ++a) start[a] = generated_xyz_[a];
-    const float feed_mm_s = float(p.feed_q8_8) / 256.0f;
-    if (!planner_.enqueue(start, p.target, feed_mm_s, acceleration_mm_s2_)) return false;
-    appended = true;
-  }
-  if (appended) planner_plan_valid_ = false;
+  // Cooperative producer rule: prepare at most ONE PathMove per service pass.
+  // PathPlanner::enqueue performs Delta motion-metric work (sqrt-heavy on AVR),
+  // so draining an entire pending window here can monopolize the 16 MHz MCU for
+  // tens of milliseconds and starve HardwareSerial. One transfer preserves the
+  // same path ordering/lookahead contents while bounding each scheduler slice.
+  if (planner_.full() || !pending_count_) return true;
+
+  PendingMove p;
+  if (!dequeuePending(p)) return true;
+  float start[3];
+  if (!planner_.empty()) planner_.latestTarget(start);
+  else for (uint8_t a = 0; a < 3; ++a) start[a] = generated_xyz_[a];
+  const float feed_mm_s = float(p.feed_q8_8) / 256.0f;
+  if (!planner_.enqueue(start, p.target, feed_mm_s, acceleration_mm_s2_)) return false;
+  planner_plan_valid_ = false;
   return true;
 }
 
@@ -179,9 +182,8 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   // window is executing. This makes the current lookahead solution immutable:
   // no expensive full-window replan is injected at every short-move boundary.
   if (!enqueuePending(target_xyz, feed_mm_s)) {
-    // Capacity fallback: if the PathPlanner has room, transfer a pending batch.
-    // The window is marked dirty and will be replanned before the next move,
-    // never in the middle of the current JerkProfile.
+    // Capacity fallback is also cooperative: transfer one pending move only.
+    // Never drain a whole planner window from the serial command path.
     if (planner_.full() || !fillPlannerFromPending() || !enqueuePending(target_xyz, feed_mm_s))
       return last_request_error_ = REQUEST_QUEUE_FULL;
   }
@@ -424,10 +426,9 @@ void MotionController::service() {
     return;
   }
 
-  // Build the first lookahead window before motion starts. Once streaming, keep
-  // that solution immutable and replenish only when the planned tail reaches a
-  // reserve zone. This turns expensive lookahead from a per-move realtime cost
-  // into a bounded rolling-window operation.
+  // Build/replenish lookahead cooperatively. fillPlannerFromPending() transfers
+  // one request only, so serial service regains control between expensive Delta
+  // metric calculations instead of waiting for a whole PathPlanner window.
   const bool may_replenish_window = !stream_active_ ||
     (!generating_move_ && pending_count_ && planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES);
   if (may_replenish_window && !fillPlannerFromPending()) {
