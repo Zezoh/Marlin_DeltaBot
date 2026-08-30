@@ -27,6 +27,8 @@ public:
 
   void clear();
   bool enqueue(const float start[3], const float target[3], float feed_mm_s, float requested_accel_mm_s2);
+  bool enqueuePrepared(const float start[3], const float target[3], float feed_mm_s,
+                       float requested_accel_mm_s2, const MotionMetrics &metrics);
   bool plan(float first_entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S);
   bool popFront(PathMove *out = nullptr);
 
@@ -51,6 +53,9 @@ private:
   }
   bool prepareMove(PathMove &m, const float start[3], const float target[3],
                    float feed_mm_s, float requested_accel_mm_s2);
+  bool prepareMoveWithMetrics(PathMove &m, const float start[3], const float target[3],
+                              float feed_mm_s, float requested_accel_mm_s2,
+                              const MotionMetrics &metrics);
 };
 
 } // namespace deltacore
