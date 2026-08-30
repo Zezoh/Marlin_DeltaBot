@@ -4,10 +4,10 @@ import random
 
 BAUD = 250000
 BYTE_US = 10_000_000 / BAUD
-RX_CAP = 256
+RX_CAP = 512
 LINE_CAP = 128
 PATH_CAP = 16
-PENDING_CAP = 64
+PENDING_CAP = 46
 ADMISSION_LIMIT = PATH_CAP + PENDING_CAP - 2
 LOOKAHEAD_RESERVE = 4
 MOTOR_CAP = 63  # 64-slot ring keeps one slot empty
@@ -16,7 +16,11 @@ TARGET = 56
 MAX_BURST = 12
 BUDGET_US = 6000
 GEN_US = 260
-PLAN_US = 650
+# Real AVR profiling on the v0.5.8 hardware candidate measured the expensive
+# planner/fill path at just under 10 ms inclusive. Model that worst observed
+# stall instead of the old optimistic 650 us estimate so UART capacity is
+# validated against real main-loop blocking time.
+PLAN_US = 10000
 PARSE_LINE_US = 90
 ACK_TX_US = 160
 START_PREFILL = 48
@@ -241,7 +245,8 @@ class RealtimeSim:
 
 def run_burst():
     # Raw unpaced sender: bounded by finite AVR memory by definition. Validate the
-    # real-world paste sizes that exposed v0.5.3 corruption, including M105 polls.
+    # real-world paste sizes that exposed corruption, including M105 polls, using
+    # the actual 512-byte RX reservoir and measured ~10 ms planner stall.
     for moves in (45,65,75):
         worst=(0,0,0)
         for seed in range(30):
@@ -262,7 +267,7 @@ def run_credit_stream():
 def main():
     run_burst()
     run_credit_stream()
-    print('PASS realtime UART + M105 + adaptive refill: no corruption, overflow, reorder, or motor starvation')
+    print('PASS realtime UART + M105 + measured planner-stall model: no corruption, overflow, reorder, or motor starvation')
 
 if __name__=='__main__':
     main()
