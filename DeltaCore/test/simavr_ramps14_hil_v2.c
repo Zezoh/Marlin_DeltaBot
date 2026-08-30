@@ -246,15 +246,18 @@ int main(int argc, char **argv) {
                      "G1 X40 Y0 Z120 F4800\n", 1, 40, 0, 120, 6000)) goto done;
     if (!run_path_v2(&s, "45-move-real-regression",
                      PATH45, 45, 0, 0, 120, 15000)) goto done;
+    /* PERF moves counts accepted G0/G1 commands. The first SHORT command is a
+       feed-only zero-length G1, so it is intentionally included here. */
     if (!run_path_v2(&s, "short-segment-torture",
-                     SHORT, 52, 0, 0, 120, 15000)) goto done;
+                     SHORT, 53, 0, 0, 120, 15000)) goto done;
 
     {
         const char *rev =
           "G1 X0 Y0 Z120 F10800\nG1 X30 Y0\nG1 X-30 Y0\nG1 X30 Y0\nG1 X-30 Y0\nG1 X0 Y0\n"
           "G1 X0 Y30\nG1 X0 Y-30\nG1 X0 Y30\nG1 X0 Y-30\nG1 X0 Y0\n";
+        /* Same accounting rule: the first line updates modal F at zero length. */
         if (!run_path_v2(&s, "reversal-F10800",
-                         rev, 10, 0, 0, 120, 30000)) goto done;
+                         rev, 11, 0, 0, 120, 30000)) goto done;
     }
 
 done:
