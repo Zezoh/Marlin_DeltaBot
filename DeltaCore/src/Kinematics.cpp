@@ -44,35 +44,40 @@ bool Kinematics::cartesianToSteps(const float xyz[3], int32_t tower_steps[3]) co
   return true;
 }
 
+bool Kinematics::motionMetricsSample(const float start[3], const float unit[3],
+                                     const float length_mm, const uint8_t sample_index,
+                                     MotionMetrics &metrics) const {
+  if (sample_index >= 5U) return false;
+  const float uxy2 = unit[0] * unit[0] + unit[1] * unit[1];
+  const float f = float(sample_index) * 0.25f;
+  const float p[3] = {
+    start[0] + unit[0] * length_mm * f,
+    start[1] + unit[1] * length_mm * f,
+    start[2] + unit[2] * length_mm * f
+  };
+  if (!withinSoftBounds(p)) return false;
+
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    const float dx = tower_xy_[axis][0] - p[0];
+    const float dy = tower_xy_[axis][1] - p[1];
+    const float inside = rod_sq_ - dx * dx - dy * dy;
+    if (inside <= 0.0f) return false;
+    const float q = sqrtf(inside);
+    const float n = dx * unit[0] + dy * unit[1];
+    const float gain = fabsf(unit[2] + n / q);
+    const float curvature = fabsf(-uxy2 / q - (n * n) / (q * q * q));
+    if (gain > metrics.max_gain) metrics.max_gain = gain;
+    if (curvature > metrics.max_curvature) metrics.max_curvature = curvature;
+  }
+  return true;
+}
+
 bool Kinematics::motionMetrics(const float start[3], const float unit[3], const float length_mm,
                                MotionMetrics &metrics) const {
   metrics.max_gain = 0.0f;
   metrics.max_curvature = 0.0f;
-  const float uxy2 = unit[0] * unit[0] + unit[1] * unit[1];
-
-  for (uint8_t s = 0; s < 5; ++s) {
-    const float f = float(s) * 0.25f;
-    const float p[3] = {
-      start[0] + unit[0] * length_mm * f,
-      start[1] + unit[1] * length_mm * f,
-      start[2] + unit[2] * length_mm * f
-    };
-    if (!withinSoftBounds(p)) return false;
-
-    for (uint8_t axis = 0; axis < 3; ++axis) {
-      const float dx = tower_xy_[axis][0] - p[0];
-      const float dy = tower_xy_[axis][1] - p[1];
-      const float inside = rod_sq_ - dx * dx - dy * dy;
-      if (inside <= 0.0f) return false;
-      const float q = sqrtf(inside);
-      const float n = dx * unit[0] + dy * unit[1];
-      const float gain = fabsf(unit[2] + n / q);
-      const float curvature = fabsf(-uxy2 / q - (n * n) / (q * q * q));
-      if (gain > metrics.max_gain) metrics.max_gain = gain;
-      if (curvature > metrics.max_curvature) metrics.max_curvature = curvature;
-    }
-  }
-
+  for (uint8_t s = 0; s < 5; ++s)
+    if (!motionMetricsSample(start, unit, length_mm, s, metrics)) return false;
   if (metrics.max_gain < 0.0001f) metrics.max_gain = 0.0001f;
   return true;
 }
