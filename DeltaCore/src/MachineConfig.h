@@ -48,10 +48,12 @@ constexpr uint16_t SMOOTH_L1_INTERVAL_TICKS = 1800;
 constexpr uint16_t SMOOTH_L2_INTERVAL_TICKS = 5000;
 
 // Rolling lookahead keeps one PathMove window only. Additional accepted G1s
-// are stored compactly as XYZ+feed requests, avoiding another large PathMove
-// array while allowing a continuous stream across planning windows.
+// are stored compactly as XYZ+feed requests. Keep this reservoir deliberately
+// smaller than v0.5.7/v0.5.8 so RAM can fund a much deeper 512-byte UART RX
+// buffer; raw bursts then wait safely in UART rather than losing bytes while
+// the AVR spends several milliseconds inside path planning.
 constexpr uint8_t PATH_QUEUE_SIZE = 16;
-constexpr uint8_t STREAM_PENDING_SIZE = 64;
+constexpr uint8_t STREAM_PENDING_SIZE = 46;
 constexpr uint8_t STREAM_ADMISSION_RESERVE = 2;
 constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
 
