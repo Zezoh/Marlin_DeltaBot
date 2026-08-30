@@ -56,6 +56,17 @@ jobs:
       - name: Build Mega2560 firmware
         run: pio run --project-dir DeltaCore -e megaatmega2560
 
+      - name: SRAM budget gate
+        run: |
+          SIZE_TOOL="$HOME/.platformio/packages/toolchain-atmelavr/bin/avr-size"
+          read TEXT DATA BSS REST <<< "$($SIZE_TOOL DeltaCore/.pio/build/megaatmega2560/firmware.elf | awk 'NR==2 {print $1, $2, $3, $4}')"
+          SRAM=$((DATA + BSS))
+          echo "SRAM=${SRAM}/8192 bytes"
+          if [ "$SRAM" -gt 4096 ]; then
+            echo "ERROR: DeltaCore static SRAM exceeds 50% budget"
+            exit 1
+          fi
+
       - name: Install simavr HIL runtime
         run: |
           sudo apt-get update -qq
@@ -93,7 +104,7 @@ jobs:
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560-v0.5.6-HIL
+          name: DeltaCore-Mega2560-v0.5.7-RAM-COMPACT-HIL
           path: |
             DeltaCore/.pio/build/megaatmega2560/firmware.hex
             DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
