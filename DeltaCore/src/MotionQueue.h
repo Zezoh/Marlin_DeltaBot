@@ -5,13 +5,18 @@
 
 namespace deltacore {
 
+// Compact queued segment representation. With the enforced 150 mm/s tower
+// ceiling and <=10 ms nominal sampling, a single segment is bounded well below
+// 255 shared DDA events. The producer still rejects anything that does not fit,
+// so this is a storage optimization, not a silent truncation.
 struct MotorBlock {
-  uint16_t steps[3];
-  uint16_t event_count;
+  uint8_t steps[3];
+  uint8_t event_count;
   uint16_t interval_base_ticks;
-  uint16_t interval_remainder_ticks;
+  uint8_t interval_remainder_ticks;
   uint8_t direction_bits;
 };
+static_assert(sizeof(MotorBlock) == 8, "MotorBlock must remain 8-byte compact storage");
 
 class MotionQueue {
 public:
