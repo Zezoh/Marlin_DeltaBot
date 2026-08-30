@@ -44,6 +44,55 @@ bool Kinematics::cartesianToSteps(const float xyz[3], int32_t tower_steps[3]) co
   return true;
 }
 
+bool Kinematics::pathWithinTowerHome(const float start[3], const float target[3],
+                                     const int32_t home_steps[3]) const {
+  if (!withinSoftBounds(start) || !withinSoftBounds(target)) return false;
+
+  const float vx = target[0] - start[0];
+  const float vy = target[1] - start[1];
+  const float vz = target[2] - start[2];
+
+  // The printable XY disk and Z interval are convex, so a line whose endpoints
+  // are inside those Cartesian bounds remains inside them. The remaining
+  // continuous constraint is tower height. For each tower:
+  //
+  //   z(u) + sqrt(L^2 - dx(u)^2 - dy(u)^2) <= H
+  //
+  // with u in [0,1]. Since H-z is positive over this machine envelope, square
+  // both sides and rearrange to a quadratic q(u)>=0. Its minimum over [0,1]
+  // occurs at an endpoint or the clamped vertex, giving an exact continuous
+  // test with no sqrt and no sample gaps.
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    // Match the integer-step acceptance rule conservatively. lroundf permits a
+    // tower coordinate just below +0.5 step above home_steps; 0.499 keeps this
+    // analytic check on the safe side of that boundary.
+    const float H = (float(home_steps[axis]) + 0.499f) / cfg::STEPS_PER_MM;
+    if (H < start[2] || H < target[2]) return false;
+
+    const float dx0 = tower_xy_[axis][0] - start[0];
+    const float dy0 = tower_xy_[axis][1] - start[1];
+    const float hz0 = H - start[2];
+
+    // dx(u)=dx0-vx*u, dy(u)=dy0-vy*u, H-z(u)=hz0-vz*u.
+    const float a = vx * vx + vy * vy + vz * vz;
+    const float b = -2.0f * (dx0 * vx + dy0 * vy + hz0 * vz);
+    const float c = dx0 * dx0 + dy0 * dy0 + hz0 * hz0 - rod_sq_;
+
+    float qmin = c;
+    const float q1 = a + b + c;
+    if (q1 < qmin) qmin = q1;
+    if (a > 1.0e-12f) {
+      float u = -b / (2.0f * a);
+      if (u > 0.0f && u < 1.0f) {
+        const float qv = (a * u + b) * u + c;
+        if (qv < qmin) qmin = qv;
+      }
+    }
+    if (qmin < 0.0f) return false;
+  }
+  return true;
+}
+
 bool Kinematics::motionMetricsSample(const float start[3], const float unit[3],
                                      const float length_mm, const uint8_t sample_index,
                                      MotionMetrics &metrics) const {
