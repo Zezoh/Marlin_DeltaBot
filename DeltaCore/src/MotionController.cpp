@@ -7,7 +7,6 @@
 namespace deltacore {
 
 static constexpr uint8_t LOOKAHEAD_RESERVE_MOVES = 4;
-static constexpr uint8_t LOOKAHEAD_REFILL_TRIGGER_MOVES = 8;
 static constexpr uint8_t METRIC_SAMPLE_COUNT = 5;
 static constexpr float Q8_SCALE = 256.0f;
 static constexpr float Q8_INV = 1.0f / Q8_SCALE;
@@ -216,7 +215,11 @@ bool MotionController::fillPlannerFromPending() {
     return true;
   }
 
-  if (generating_move_ || profile_prepare_active_ || planner_.planning()) return true;
+  // Appending to the ring tail is safe while the current move is already
+  // generating: the head PathMove and its JerkProfile are immutable. Do not
+  // append while a planner pass or a not-yet-committed profile is in flight,
+  // because that would invalidate the solution being prepared.
+  if (profile_prepare_active_ || planner_.planning()) return true;
 
   const float feed_mm_s = float(p.feed_q8_8) * Q8_INV;
   if (!planner_.enqueuePrepared(start, target, feed_mm_s, acceleration_mm_s2_, pending_metrics_)) return false;
@@ -503,8 +506,10 @@ void MotionController::service() {
     return;
   }
 
-  const bool may_prepare_pending = pending_count_ &&
-    (!stream_active_ || planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES);
+  // Keep the rolling window as full as possible. Preparation may run while the
+  // current committed move is generating, and completed moves append only to
+  // the ring tail. Replanning is still forbidden until the move boundary.
+  const bool may_prepare_pending = pending_count_ && !planner_.full();
   if (may_prepare_pending && !fillPlannerFromPending()) {
     stepper_.emergencyStop(FAULT_INTERNAL);
     failController();
@@ -547,8 +552,6 @@ void MotionController::service() {
         failController();
         return;
       }
-      // Profile construction is cooperative. Yield after exactly one setup or
-      // solver slice so serial ingress and prefetch run before the next slice.
       if (!generating_move_) break;
     }
 
