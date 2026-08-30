@@ -6,18 +6,18 @@
 
 namespace deltacore {
 
+// Only persistent planning state lives in the ring. requested feed, transient
+// max-entry candidates and tower gain are consumed while preparing/planning a
+// move and do not need 16 replicated float slots in SRAM.
 struct PathMove {
   float start[3];
   float target[3];
   float unit[3];
   float length_mm;
-  float requested_speed_mm_s;
   float nominal_speed_mm_s;
   float accel_mm_s2;
-  float max_entry_speed_mm_s;
   float entry_speed_mm_s;
   float exit_speed_mm_s;
-  float max_tower_gain;
   float max_tower_curvature;
 };
 
