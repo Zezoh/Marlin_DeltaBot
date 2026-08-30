@@ -57,10 +57,6 @@ public:
 private:
   enum HomeState : uint8_t { HOME_IDLE = 0, HOME_FAST, HOME_BACKOFF, HOME_SLOW };
 
-  // Pending commands are not executing trajectory state. Preserve XYZ as full
-  // AVR float, but store modal feed in Q8.8 mm/s: 0.00390625 mm/s resolution,
-  // 0..255.996 mm/s range. This cuts 2 bytes per pending entry with no relevant
-  // motion-resolution loss and avoids shrinking the 64-command ingress ring.
   struct PendingMove {
     float target[3];
     uint16_t feed_q8_8;
@@ -104,6 +100,15 @@ private:
   PendingMove pending_[cfg::STREAM_PENDING_SIZE];
   uint8_t pending_head_, pending_tail_, pending_count_;
 
+  // Cooperative preparation of pending_[pending_tail_]. Validation keeps the
+  // original 17 tower samples and metric generation keeps the original five
+  // samples, but only one expensive IK/metric sample is performed per service
+  // pass so UART and the step producer regain control between samples.
+  bool pending_prepare_active_;
+  uint8_t pending_validation_sample_;
+  uint8_t pending_metric_sample_;
+  MotionMetrics pending_metrics_;
+
   bool enqueuePending(const float target[3], float feed_mm_s);
   bool dequeuePending(PendingMove &move);
   bool fillPlannerFromPending();
@@ -113,8 +118,8 @@ private:
   bool canCommitNextMove() const;
   bool initGeneratingMove(const PathMove &move);
   float adaptiveSegmentDuration(const PathMove &move, float time_s, JerkSample &endpoint_sample) const;
-  bool validatePath(const float start[3], const float target[3]) const;
   bool towerWithinHome(const int32_t tower_steps[3]) const;
+  void resetPendingPreparation();
   void finishHome();
   void finishStream();
   void failController();
