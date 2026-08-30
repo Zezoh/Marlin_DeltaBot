@@ -17,8 +17,9 @@ void PathPlanner::clear() {
   count_ = 0;
 }
 
-bool PathPlanner::prepareMove(PathMove &m, const float start[3], const float target[3],
-                              float feed_mm_s, float requested_accel_mm_s2) {
+bool PathPlanner::prepareMoveWithMetrics(PathMove &m, const float start[3], const float target[3],
+                                         float feed_mm_s, float requested_accel_mm_s2,
+                                         const MotionMetrics &metrics) {
   float len2 = 0.0f;
   for (uint8_t i = 0; i < 3; ++i) {
     m.start[i] = start[i];
@@ -31,19 +32,19 @@ bool PathPlanner::prepareMove(PathMove &m, const float start[3], const float tar
   if (m.length_mm < 0.0005f) return false;
   for (uint8_t i = 0; i < 3; ++i) m.unit[i] /= m.length_mm;
 
-  MotionMetrics metrics;
-  if (!kinematics_.motionMetrics(m.start, m.unit, m.length_mm, metrics)) return false;
-  m.max_tower_curvature = metrics.max_curvature;
+  MotionMetrics sane = metrics;
+  if (sane.max_gain < 0.0001f) sane.max_gain = 0.0001f;
+  m.max_tower_curvature = sane.max_curvature;
 
   if (feed_mm_s < 1.0f) feed_mm_s = 1.0f;
   if (feed_mm_s > cfg::MAX_CARTESIAN_FEED_MM_S) feed_mm_s = cfg::MAX_CARTESIAN_FEED_MM_S;
 
-  const float tower_speed_limit = cfg::MAX_TOWER_SPEED_MM_S / metrics.max_gain;
+  const float tower_speed_limit = cfg::MAX_TOWER_SPEED_MM_S / sane.max_gain;
   float curvature_speed_limit = cfg::MAX_CARTESIAN_FEED_MM_S;
-  if (metrics.max_curvature > 1.0e-7f) {
+  if (sane.max_curvature > 1.0e-7f) {
     curvature_speed_limit = sqrtf(
       (cfg::MAX_TOWER_ACCEL_MM_S2 * cfg::TOWER_CURVATURE_ACCEL_FRACTION) /
-      metrics.max_curvature
+      sane.max_curvature
     );
   }
   m.nominal_speed_mm_s = minf3(feed_mm_s, tower_speed_limit, curvature_speed_limit);
@@ -54,7 +55,7 @@ bool PathPlanner::prepareMove(PathMove &m, const float start[3], const float tar
   if (requested_accel_mm_s2 > cfg::MAX_CARTESIAN_ACCEL_MM_S2)
     requested_accel_mm_s2 = cfg::MAX_CARTESIAN_ACCEL_MM_S2;
   const float tower_accel_limit =
-    (cfg::MAX_TOWER_ACCEL_MM_S2 * cfg::TOWER_TANGENTIAL_ACCEL_FRACTION) / metrics.max_gain;
+    (cfg::MAX_TOWER_ACCEL_MM_S2 * cfg::TOWER_TANGENTIAL_ACCEL_FRACTION) / sane.max_gain;
   m.accel_mm_s2 = requested_accel_mm_s2 < tower_accel_limit ? requested_accel_mm_s2 : tower_accel_limit;
   if (m.accel_mm_s2 < 50.0f) m.accel_mm_s2 = 50.0f;
 
@@ -63,11 +64,41 @@ bool PathPlanner::prepareMove(PathMove &m, const float start[3], const float tar
   return true;
 }
 
+bool PathPlanner::prepareMove(PathMove &m, const float start[3], const float target[3],
+                              float feed_mm_s, float requested_accel_mm_s2) {
+  float len2 = 0.0f;
+  float unit[3];
+  for (uint8_t i = 0; i < 3; ++i) {
+    const float d = target[i] - start[i];
+    unit[i] = d;
+    len2 += d * d;
+  }
+  const float length_mm = sqrtf(len2);
+  if (length_mm < 0.0005f) return false;
+  for (uint8_t i = 0; i < 3; ++i) unit[i] /= length_mm;
+
+  MotionMetrics metrics;
+  if (!kinematics_.motionMetrics(start, unit, length_mm, metrics)) return false;
+  return prepareMoveWithMetrics(m, start, target, feed_mm_s, requested_accel_mm_s2, metrics);
+}
+
 bool PathPlanner::enqueue(const float start[3], const float target[3], const float feed_mm_s,
                           const float requested_accel_mm_s2) {
   if (full()) return false;
   PathMove candidate;
   if (!prepareMove(candidate, start, target, feed_mm_s, requested_accel_mm_s2)) return false;
+  const uint8_t tail = physicalIndex(count_);
+  moves_[tail] = candidate;
+  ++count_;
+  return true;
+}
+
+bool PathPlanner::enqueuePrepared(const float start[3], const float target[3], const float feed_mm_s,
+                                  const float requested_accel_mm_s2, const MotionMetrics &metrics) {
+  if (full()) return false;
+  PathMove candidate;
+  if (!prepareMoveWithMetrics(candidate, start, target, feed_mm_s, requested_accel_mm_s2, metrics))
+    return false;
   const uint8_t tail = physicalIndex(count_);
   moves_[tail] = candidate;
   ++count_;
