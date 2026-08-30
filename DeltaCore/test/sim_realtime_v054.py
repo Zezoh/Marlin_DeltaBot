@@ -4,20 +4,22 @@ import random
 
 BAUD = 250000
 BYTE_US = 10_000_000 / BAUD
-RX_CAP = 512
+RX_CAP = 256
+LINE_CAP = 128
 PATH_CAP = 16
 PENDING_CAP = 64
 ADMISSION_LIMIT = PATH_CAP + PENDING_CAP - 2
 LOOKAHEAD_RESERVE = 4
-LOW = 14
-TARGET = 28
-MAX_BURST = 8
-BUDGET_US = 1800
+MOTOR_CAP = 63  # 64-slot ring keeps one slot empty
+LOW = 24
+TARGET = 56
+MAX_BURST = 12
+BUDGET_US = 6000
 GEN_US = 260
 PLAN_US = 650
 PARSE_LINE_US = 90
 ACK_TX_US = 160
-START_PREFILL = 24
+START_PREFILL = 48
 
 
 def make_commands(move_count, rng, include_m105=True):
@@ -139,7 +141,7 @@ class RealtimeSim:
                 continue
             if c!=10:
                 self.line.append(c)
-                if len(self.line)>=192:
+                if len(self.line)>=LINE_CAP:
                     raise AssertionError('line overflow')
                 continue
 
@@ -188,7 +190,7 @@ class RealtimeSim:
         limit=MAX_BURST if urgent else 1
         spent=0; produced=0
 
-        while produced<limit and len(self.motorq)<31:
+        while produced<limit and len(self.motorq)<MOTOR_CAP:
             if self.current_segments==0:
                 if not self.can_commit(): break
                 self.advance(PLAN_US); spent+=PLAN_US
@@ -245,7 +247,7 @@ def run_burst():
         for seed in range(30):
             s=RealtimeSim(moves,seed,paced=False)
             mr,mp,mq,_=s.run(); worst=(max(worst[0],mr),max(worst[1],mp),max(worst[2],mq))
-        print(f'PASS raw-burst moves={moves} seeds=30 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}')
+        print(f'PASS raw-burst moves={moves} seeds=30 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}/{MOTOR_CAP}')
 
 
 def run_credit_stream():
@@ -254,7 +256,7 @@ def run_credit_stream():
         for seed in range(seeds):
             s=RealtimeSim(moves,seed,paced=True,host_window=4)
             mr,mp,mq,_=s.run(); worst=(max(worst[0],mr),max(worst[1],mp),max(worst[2],mq))
-        print(f'PASS credit-stream moves={moves} seeds={seeds} window=4 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}')
+        print(f'PASS credit-stream moves={moves} seeds={seeds} window=4 max_rx={worst[0]}/{RX_CAP} max_pending={worst[1]}/{PENDING_CAP} motorq_hi={worst[2]}/{MOTOR_CAP}')
 
 
 def main():
