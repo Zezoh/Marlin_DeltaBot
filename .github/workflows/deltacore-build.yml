@@ -78,9 +78,8 @@ jobs:
             DeltaCore/.pio/build/megaatmega2560/firmware.elf
 
       - name: Profile short-segment hot path on real AVR cycles
-        continue-on-error: true
         run: |
-          timeout 90s /tmp/deltacore_ramps14_profile \
+          timeout 45s /tmp/deltacore_ramps14_profile \
             DeltaCore/.pio/build/megaatmega2560/firmware.elf
 
       - name: Static RAM symbol map
