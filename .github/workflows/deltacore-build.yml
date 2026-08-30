@@ -1,0 +1,116 @@
+# DeltaCore cycle-accurate RAMPS 1.4 verification + AVR hot-path profiling
+name: DeltaCore AVR Build
+
+on:
+  push:
+    branches:
+      - codex/deltacore-motion-baseline-v0.1
+    paths:
+      - 'DeltaCore/**'
+      - '.github/workflows/deltacore-build.yml'
+  pull_request:
+    paths:
+      - 'DeltaCore/**'
+      - '.github/workflows/deltacore-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Host motion tests
+        run: |
+          g++ -std=c++11 -Wall -Wextra -pedantic -IDeltaCore/src \
+            DeltaCore/test/test_math.cpp \
+            DeltaCore/src/Dda3Axis.cpp \
+            DeltaCore/src/JerkProfile.cpp \
+            DeltaCore/src/Kinematics.cpp \
+            DeltaCore/src/PathPlanner.cpp \
+            DeltaCore/src/PhaseStep3Axis.cpp \
+            -o /tmp/deltacore_motion_test
+          /tmp/deltacore_motion_test
+
+      - name: Exact-time hardware regression simulation
+        run: python3 DeltaCore/test/sim_v050.py
+
+      - name: Rolling stream state-machine stress simulation
+        run: python3 DeltaCore/test/sim_stream_v053.py
+
+      - name: Realtime UART and adaptive-refill stress simulation
+        run: python3 DeltaCore/test/sim_realtime_v054.py
+
+      - name: Tiny-tail and underrun recovery regression
+        run: python3 DeltaCore/test/sim_v055.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+
+      - name: Build Mega2560 firmware
+        run: pio run --project-dir DeltaCore -e megaatmega2560
+
+      - name: SRAM budget gate
+        run: |
+          SIZE_TOOL="$HOME/.platformio/packages/toolchain-atmelavr/bin/avr-size"
+          ELF="DeltaCore/.pio/build/megaatmega2560/firmware.elf"
+          # Generic avr-size's "data" column also counts the .eeprom section on
+          # AVR. Static SRAM is only allocatable RAM sections: .data + .bss +
+          # .noinit. Keep EEPROM explicitly separate so the gate matches the
+          # linker/PlatformIO RAM report instead of over-counting 192 EEPROM B.
+          SRAM=$($SIZE_TOOL -A "$ELF" | awk '$1==".data" || $1==".bss" || $1==".noinit" {sum += $2} END {print sum+0}')
+          EEPROM=$($SIZE_TOOL -A "$ELF" | awk '$1==".eeprom" {sum += $2} END {print sum+0}')
+          echo "Static SRAM=${SRAM}/8192 bytes; EEPROM image=${EEPROM} bytes"
+          if [ "$SRAM" -gt 4096 ]; then
+            echo "ERROR: DeltaCore static SRAM exceeds 50% budget"
+            exit 1
+          fi
+
+      - name: Install simavr HIL runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y simavr libsimavr-dev pkg-config
+
+      - name: Build strict RAMPS 1.4 HIL v2 and AVR profiler
+        run: |
+          CFLAGS="$(pkg-config --cflags simavr 2>/dev/null || echo -I/usr/include/simavr)"
+          LIBS="$(pkg-config --libs simavr 2>/dev/null || echo '-lsimavr -lelf -lpthread')"
+          cc -std=c11 -O2 -Wall -Wextra $CFLAGS \
+            DeltaCore/test/simavr_ramps14_hil_v2.c \
+            -o /tmp/deltacore_ramps14_hil $LIBS -lm
+          cc -std=c11 -O2 -Wall -Wextra $CFLAGS \
+            DeltaCore/test/simavr_ramps14_profile.c \
+            -o /tmp/deltacore_ramps14_profile $LIBS -lm
+
+      - name: Strict cycle-accurate ATmega2560 + RAMPS 1.4 + 3xA4988 HIL v2
+        run: |
+          timeout 180s /tmp/deltacore_ramps14_hil \
+            DeltaCore/.pio/build/megaatmega2560/firmware.elf
+
+      - name: Profile short-segment hot path on real AVR cycles
+        run: |
+          timeout 45s /tmp/deltacore_ramps14_profile \
+            DeltaCore/.pio/build/megaatmega2560/firmware.elf
+
+      - name: Static RAM symbol map
+        run: |
+          $HOME/.platformio/packages/toolchain-atmelavr/bin/avr-nm \
+            -S --size-sort --radix=d \
+            DeltaCore/.pio/build/megaatmega2560/firmware.elf \
+            > DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
+          tail -n 80 DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
+
+      - name: Upload firmware HEX
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeltaCore-Mega2560-v0.5.7-RAM-COMPACT-HIL
+          path: |
+            DeltaCore/.pio/build/megaatmega2560/firmware.hex
+            DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
+          if-no-files-found: error
