@@ -121,7 +121,9 @@ bool MotionController::enqueuePending(const float target[3], const float feed_mm
   if (pending_count_ >= cfg::STREAM_PENDING_SIZE) return false;
   PendingMove &p = pending_[pending_head_];
   for (uint8_t a = 0; a < 3; ++a) p.target[a] = target[a];
-  p.feed_mm_s = feed_mm_s;
+  const float q = feed_mm_s * 256.0f;
+  if (q < 0.0f || q > 65535.0f) return false;
+  p.feed_q8_8 = uint16_t(q + 0.5f);
   pending_head_ = uint8_t((uint16_t(pending_head_) + 1U) % cfg::STREAM_PENDING_SIZE);
   ++pending_count_;
   return true;
@@ -143,7 +145,8 @@ bool MotionController::fillPlannerFromPending() {
     float start[3];
     if (!planner_.empty()) planner_.latestTarget(start);
     else for (uint8_t a = 0; a < 3; ++a) start[a] = generated_xyz_[a];
-    if (!planner_.enqueue(start, p.target, p.feed_mm_s, acceleration_mm_s2_)) return false;
+    const float feed_mm_s = float(p.feed_q8_8) / 256.0f;
+    if (!planner_.enqueue(start, p.target, feed_mm_s, acceleration_mm_s2_)) return false;
     appended = true;
   }
   if (appended) planner_plan_valid_ = false;
@@ -302,12 +305,12 @@ bool MotionController::generateOneSegment() {
   if (!towerWithinHome(target_steps)) return false;
 
   MotorBlock block = {};
-  uint16_t max_steps = 0;
+  uint8_t max_steps = 0;
   for (uint8_t a = 0; a < 3; ++a) {
     const int32_t d = target_steps[a] - generated_motor_steps_[a];
     const uint32_t mag = d >= 0 ? uint32_t(d) : uint32_t(-d);
-    if (mag > 65535UL) return false;
-    block.steps[a] = uint16_t(mag);
+    if (mag > 255UL) return false;
+    block.steps[a] = uint8_t(mag);
     if (block.steps[a] > max_steps) max_steps = block.steps[a];
     if (d >= 0) block.direction_bits |= uint8_t(1U << a);
   }
@@ -325,7 +328,7 @@ bool MotionController::generateOneSegment() {
   const uint32_t base = total_ticks / block.event_count;
   if (base < cfg::MIN_EVENT_INTERVAL_TICKS || base > cfg::MAX_EVENT_INTERVAL_TICKS) return false;
   block.interval_base_ticks = uint16_t(base);
-  block.interval_remainder_ticks = uint16_t(total_ticks % block.event_count);
+  block.interval_remainder_ticks = uint8_t(total_ticks % block.event_count);
   if (!queue_.enqueue(block)) return false;
 
   generated_time_s_ = next_time;
