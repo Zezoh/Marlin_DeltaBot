@@ -94,7 +94,7 @@ jobs:
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560-HIL
+          name: DeltaCore-Mega2560-v0.5.6-HIL
           path: |
             DeltaCore/.pio/build/megaatmega2560/firmware.hex
             DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
