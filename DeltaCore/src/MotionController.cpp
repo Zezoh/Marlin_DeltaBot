@@ -156,6 +156,12 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   if (home_state_ != HOME_IDLE) return last_request_error_ = REQUEST_BUSY;
   if (!kinematics_.withinSoftBounds(target_xyz)) return last_request_error_ = REQUEST_OUT_OF_BOUNDS;
 
+  // G-code feedrate is modal. A legal G0/G1 that only changes F must update the
+  // modal feed even when XYZ is unchanged and therefore no PathMove is queued.
+  if (feed_mm_s < 1.0f) feed_mm_s = 1.0f;
+  if (feed_mm_s > cfg::MAX_CARTESIAN_FEED_MM_S) feed_mm_s = cfg::MAX_CARTESIAN_FEED_MM_S;
+  default_feed_mm_s_ = feed_mm_s;
+
   float start[3];
   for (uint8_t a = 0; a < 3; ++a) start[a] = command_xyz_[a];
   float delta2 = 0.0f;
@@ -165,9 +171,6 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   }
   if (delta2 < 0.00000025f) return last_request_error_ = REQUEST_OK;
   if (!validatePath(start, target_xyz)) return last_request_error_ = REQUEST_KINEMATICS;
-
-  if (feed_mm_s < 1.0f) feed_mm_s = 1.0f;
-  if (feed_mm_s > cfg::MAX_CARTESIAN_FEED_MM_S) feed_mm_s = cfg::MAX_CARTESIAN_FEED_MM_S;
 
   // Keep newly accepted commands in the compact pending ring while a planned
   // window is executing. This makes the current lookahead solution immutable:
@@ -181,7 +184,6 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   }
 
   for (uint8_t a = 0; a < 3; ++a) command_xyz_[a] = target_xyz[a];
-  default_feed_mm_s_ = feed_mm_s;
   last_enqueue_ms_ = millis();
   flush_requested_ = false;
   event_ = EVENT_NONE;
