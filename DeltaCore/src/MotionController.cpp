@@ -8,6 +8,8 @@ namespace deltacore {
 
 static constexpr uint8_t LOOKAHEAD_RESERVE_MOVES = 4;
 static constexpr uint8_t LOOKAHEAD_REFILL_TRIGGER_MOVES = 8;
+static constexpr uint8_t PATH_VALIDATION_LAST_SAMPLE = 16;
+static constexpr uint8_t METRIC_SAMPLE_COUNT = 5;
 
 MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper,
                                    Kinematics &kinematics, PathPlanner &planner)
@@ -21,7 +23,17 @@ MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper,
     segment_length_limit_mm_(cfg::MAX_SEGMENT_MM), generated_motor_steps_{0,0,0},
     final_motor_steps_{0,0,0}, profile_(), acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2),
     default_feed_mm_s_(cfg::DEFAULT_FEED_MM_S), smoothing_mode_(-1),
-    pending_{}, pending_head_(0), pending_tail_(0), pending_count_(0) {}
+    pending_{}, pending_head_(0), pending_tail_(0), pending_count_(0),
+    pending_prepare_active_(false), pending_validation_sample_(0), pending_metric_sample_(0),
+    pending_metrics_{0.0f, 0.0f} {}
+
+void MotionController::resetPendingPreparation() {
+  pending_prepare_active_ = false;
+  pending_validation_sample_ = 0;
+  pending_metric_sample_ = 0;
+  pending_metrics_.max_gain = 0.0f;
+  pending_metrics_.max_curvature = 0.0f;
+}
 
 void MotionController::begin() {
   homed_ = false;
@@ -36,6 +48,7 @@ void MotionController::begin() {
   committed_exit_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
   planner_.clear();
   pending_head_ = pending_tail_ = pending_count_ = 0;
+  resetPendingPreparation();
   event_ = EVENT_NONE;
 }
 
@@ -43,6 +56,7 @@ void MotionController::invalidatePosition() {
   homed_ = false;
   planner_.clear();
   pending_head_ = pending_tail_ = pending_count_ = 0;
+  resetPendingPreparation();
   stream_active_ = false;
   generating_move_ = false;
   planner_plan_valid_ = false;
@@ -88,6 +102,7 @@ RequestResult MotionController::requestHome() {
   planner_.clear();
   planner_plan_valid_ = false;
   pending_head_ = pending_tail_ = pending_count_ = 0;
+  resetPendingPreparation();
   queue_.clear();
   stepper_.clearHomeResult();
   if (!stepper_.startHomeSeek(false)) return last_request_error_ = REQUEST_BUSY;
@@ -99,21 +114,6 @@ bool MotionController::towerWithinHome(const int32_t tower_steps[3]) const {
   if (!homed_) return true;
   for (uint8_t axis = 0; axis < 3; ++axis)
     if (tower_steps[axis] > home_motor_steps_[axis]) return false;
-  return true;
-}
-
-bool MotionController::validatePath(const float start[3], const float target[3]) const {
-  const uint8_t samples = 16;
-  for (uint8_t i = 0; i <= samples; ++i) {
-    const float u = float(i) / float(samples);
-    const float p[3] = {
-      start[0] + (target[0] - start[0]) * u,
-      start[1] + (target[1] - start[1]) * u,
-      start[2] + (target[2] - start[2]) * u
-    };
-    int32_t tower[3];
-    if (!kinematics_.cartesianToSteps(p, tower) || !towerWithinHome(tower)) return false;
-  }
   return true;
 }
 
@@ -138,20 +138,74 @@ bool MotionController::dequeuePending(PendingMove &move) {
 }
 
 bool MotionController::fillPlannerFromPending() {
-  // Cooperative producer rule: prepare at most ONE PathMove per service pass.
-  // PathPlanner::enqueue performs Delta motion-metric work (sqrt-heavy on AVR),
-  // so draining an entire pending window here can monopolize the 16 MHz MCU for
-  // tens of milliseconds and starve HardwareSerial. One transfer preserves the
-  // same path ordering/lookahead contents while bounding each scheduler slice.
-  if (planner_.full() || !pending_count_) return true;
+  if (!pending_count_) {
+    resetPendingPreparation();
+    return true;
+  }
+  if (planner_.full()) return true;
 
-  PendingMove p;
-  if (!dequeuePending(p)) return true;
+  const PendingMove &p = pending_[pending_tail_];
   float start[3];
   if (!planner_.empty()) planner_.latestTarget(start);
   else for (uint8_t a = 0; a < 3; ++a) start[a] = generated_xyz_[a];
+
+  if (!pending_prepare_active_) {
+    pending_prepare_active_ = true;
+    pending_validation_sample_ = 0;
+    pending_metric_sample_ = 0;
+    pending_metrics_.max_gain = 0.0f;
+    pending_metrics_.max_curvature = 0.0f;
+  }
+
+  // Preserve the original 17-point path validation exactly, but evaluate one
+  // point per scheduler pass. No command reaches the planner until every point
+  // has passed both Delta IK and tower-home limits.
+  if (pending_validation_sample_ <= PATH_VALIDATION_LAST_SAMPLE) {
+    const float u = float(pending_validation_sample_) / float(PATH_VALIDATION_LAST_SAMPLE);
+    const float point[3] = {
+      start[0] + (p.target[0] - start[0]) * u,
+      start[1] + (p.target[1] - start[1]) * u,
+      start[2] + (p.target[2] - start[2]) * u
+    };
+    int32_t tower[3];
+    if (!kinematics_.cartesianToSteps(point, tower) || !towerWithinHome(tower)) return false;
+    ++pending_validation_sample_;
+    return true;
+  }
+
+  float unit[3];
+  float len2 = 0.0f;
+  for (uint8_t a = 0; a < 3; ++a) {
+    unit[a] = p.target[a] - start[a];
+    len2 += unit[a] * unit[a];
+  }
+  const float length_mm = sqrtf(len2);
+  if (length_mm < 0.0005f) return false;
+  for (uint8_t a = 0; a < 3; ++a) unit[a] /= length_mm;
+
+  // Preserve the original five motion-metric sample positions exactly. One
+  // sample still evaluates all three towers, but the main loop regains control
+  // before the next sample.
+  if (pending_metric_sample_ < METRIC_SAMPLE_COUNT) {
+    if (!kinematics_.motionMetricsSample(start, unit, length_mm,
+                                         pending_metric_sample_, pending_metrics_)) return false;
+    ++pending_metric_sample_;
+    return true;
+  }
+
+  // During active generation we may precompute all expensive validation and
+  // metrics, but defer the actual planner mutation until a move boundary. This
+  // preserves the rolling-lookahead semantics and keeps the current trajectory
+  // solution immutable.
+  if (generating_move_) return true;
+
   const float feed_mm_s = float(p.feed_q8_8) / 256.0f;
-  if (!planner_.enqueue(start, p.target, feed_mm_s, acceleration_mm_s2_)) return false;
+  if (!planner_.enqueuePrepared(start, p.target, feed_mm_s, acceleration_mm_s2_, pending_metrics_))
+    return false;
+
+  PendingMove consumed;
+  if (!dequeuePending(consumed)) return false;
+  resetPendingPreparation();
   planner_plan_valid_ = false;
   return true;
 }
@@ -162,8 +216,6 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   if (home_state_ != HOME_IDLE) return last_request_error_ = REQUEST_BUSY;
   if (!kinematics_.withinSoftBounds(target_xyz)) return last_request_error_ = REQUEST_OUT_OF_BOUNDS;
 
-  // G-code feedrate is modal. A legal G0/G1 that only changes F must update the
-  // modal feed even when XYZ is unchanged and therefore no PathMove is queued.
   if (feed_mm_s < 1.0f) feed_mm_s = 1.0f;
   if (feed_mm_s > cfg::MAX_CARTESIAN_FEED_MM_S) feed_mm_s = cfg::MAX_CARTESIAN_FEED_MM_S;
   default_feed_mm_s_ = feed_mm_s;
@@ -176,17 +228,12 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
     delta2 += d * d;
   }
   if (delta2 < 0.00000025f) return last_request_error_ = REQUEST_OK;
-  if (!validatePath(start, target_xyz)) return last_request_error_ = REQUEST_KINEMATICS;
 
-  // Keep newly accepted commands in the compact pending ring while a planned
-  // window is executing. This makes the current lookahead solution immutable:
-  // no expensive full-window replan is injected at every short-move boundary.
-  if (!enqueuePending(target_xyz, feed_mm_s)) {
-    // Capacity fallback is also cooperative: transfer one pending move only.
-    // Never drain a whole planner window from the serial command path.
-    if (planner_.full() || !fillPlannerFromPending() || !enqueuePending(target_xyz, feed_mm_s))
-      return last_request_error_ = REQUEST_QUEUE_FULL;
-  }
+  // Deep path/tower validation is deliberately deferred to the cooperative
+  // pending-preparation state machine. The cheap Cartesian soft bound remains
+  // synchronous so obviously invalid commands are rejected immediately.
+  if (!enqueuePending(target_xyz, feed_mm_s))
+    return last_request_error_ = REQUEST_QUEUE_FULL;
 
   for (uint8_t a = 0; a < 3; ++a) command_xyz_[a] = target_xyz[a];
   last_enqueue_ms_ = millis();
@@ -368,6 +415,7 @@ void MotionController::finishHome() {
   stepper_.setMotorPositionSteps(home_steps);
   carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
   planner_plan_valid_ = false;
+  resetPendingPreparation();
   homed_ = true;
   home_state_ = HOME_IDLE;
   event_ = EVENT_HOME_DONE;
@@ -382,6 +430,7 @@ void MotionController::finishStream() {
   flush_requested_ = false;
   carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
   committed_exit_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
+  resetPendingPreparation();
   event_ = EVENT_MOVE_DONE;
 }
 
@@ -393,6 +442,7 @@ void MotionController::failController() {
   flush_requested_ = false;
   planner_.clear();
   pending_head_ = pending_tail_ = pending_count_ = 0;
+  resetPendingPreparation();
   queue_.clear();
   home_state_ = HOME_IDLE;
   homed_ = false;
@@ -426,17 +476,22 @@ void MotionController::service() {
     return;
   }
 
-  // Build/replenish lookahead cooperatively. fillPlannerFromPending() transfers
-  // one request only, so serial service regains control between expensive Delta
-  // metric calculations instead of waiting for a whole PathPlanner window.
-  const bool may_replenish_window = !stream_active_ ||
-    (!generating_move_ && pending_count_ && planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES);
-  if (may_replenish_window && !fillPlannerFromPending()) {
+  // Precompute pending work while a current move is generating, but final
+  // planner insertion is deferred inside fillPlannerFromPending() until the
+  // move boundary. This uses otherwise available main-loop time without
+  // mutating the active lookahead solution.
+  const bool may_prepare_pending = pending_count_ &&
+    (!stream_active_ || planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES);
+  if (may_prepare_pending && !fillPlannerFromPending()) {
     stepper_.emergencyStop(FAULT_INTERNAL); failController(); return;
   }
 
   if (!stream_active_ && !planner_.empty()) {
-    if (planner_.full() || streamClosed()) stream_active_ = true;
+    // The 200 ms host hold must not close the initial lookahead while accepted
+    // commands are still merely awaiting cooperative preparation. A long burst
+    // therefore starts at a full 16-move window exactly as before.
+    const bool all_ingress_prepared = !pending_count_ && !pending_prepare_active_;
+    if (planner_.full() || (all_ingress_prepared && streamClosed())) stream_active_ = true;
   }
 
   if (motion_started_ && stream_active_ && !stepper_.executionActive())
@@ -481,6 +536,7 @@ void MotionController::emergencyStop() {
   queue_.clear();
   planner_.clear();
   pending_head_ = pending_tail_ = pending_count_ = 0;
+  resetPendingPreparation();
   homed_ = false;
   home_state_ = HOME_IDLE;
   stream_active_ = false;
@@ -500,6 +556,7 @@ bool MotionController::clearFault() {
   motion_started_ = false;
   generating_move_ = false;
   planner_plan_valid_ = false;
+  resetPendingPreparation();
   return true;
 }
 
