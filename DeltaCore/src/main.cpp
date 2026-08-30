@@ -252,7 +252,7 @@ static void printPerformance(const bool path_summary) {
 }
 
 static void printMotionSettings() {
-  Serial.println(F("DeltaCore v0.5.6 motion settings:"));
+  Serial.println(F("DeltaCore v0.5.7 RAM-compact motion settings:"));
   Serial.print(F("  accel=")); Serial.println(motion.acceleration(), 1);
   Serial.print(F("  jerk_limit=")); Serial.println(motion.jerkLimit(), 0);
   Serial.print(F("  junction_deviation=")); Serial.println(cfg::JUNCTION_DEVIATION_MM, 3);
@@ -269,7 +269,7 @@ static void printMotionSettings() {
   Serial.println(F("  trajectory=7-phase time-domain jerk-limited S-curve"));
   Serial.println(F("  delta_generator=curvature-bounded + cached tower endpoint"));
   Serial.println(F("  stepgen=deterministic integer A/B/C DDA + exact segment tick budget"));
-  Serial.println(F("  stepper_queue=compact integer MotorBlock + main-loop prefetch"));
+  Serial.println(F("  stepper_queue=compact 8-byte MotorBlock + main-loop prefetch"));
   Serial.println(F("  serial=barrier-aware deferred queue + immediate M105/M112"));
   Serial.print(F("  motion_start_prefill_blocks=")); Serial.println(cfg::MOTION_START_PREFILL_BLOCKS);
 }
@@ -340,7 +340,7 @@ static void processCommand(char *raw_line, bool count_rx = true) {
   }
 
   if (commandStarts(line, "HELP")) {
-    Serial.println(F("DeltaCore v0.5.6: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
+    Serial.println(F("DeltaCore v0.5.7: M119 G28 G0/G1 G92E M400 M114 M204 M970 M971 M972 M973 M111 M113 M17 M18 M112 M999 M115 M503 STATUS"));
     ack(); return;
   }
   if (commandStarts(line, "STATUS") || commandStarts(line, "M973")) { printStatus(); ack(); return; }
@@ -360,9 +360,9 @@ static void processCommand(char *raw_line, bool count_rx = true) {
     Serial.println(F("echo:runtime motion defaults restored")); ack(); return;
   }
   if (commandStarts(line, "M115")) {
-    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.5.6 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
+    Serial.print(F("FIRMWARE_NAME:DeltaCore VERSION:0.5.7 BOARD:MKS_MINI_20 MCU:ATmega2560 SESSION:"));
     Serial.print(bootSessionId());
-    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+FAST_DELTA_GEN+INTEGER_DDA+EXACT_SEGMENT_TIME+ROLLING_COMMIT+SERIAL_FAIR+ADAPTIVE_REFILL+UNDERRUN_REFILL+TAIL_GUARD+PULSE_CATCHUP+SCHED_FLOOR+MODAL_FEED DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
+    Serial.println(F(" MOTION:LOOKAHEAD+TOWER_LIMITS+JERK_S_CURVE+FAST_DELTA_GEN+INTEGER_DDA+EXACT_SEGMENT_TIME+ROLLING_COMMIT+SERIAL_FAIR+ADAPTIVE_REFILL+UNDERRUN_REFILL+TAIL_GUARD+PULSE_CATCHUP+SCHED_FLOOR+MODAL_FEED+RAM_COMPACT DEBUG:PERF+BOOT_SESSION SERIAL:BARRIER_QUEUE"));
     ack(); return;
   }
 
@@ -510,11 +510,12 @@ void setup() {
   motion.begin();
 
   Serial.println();
-  Serial.println(F("DeltaCore 0.5.6 - Mega2560 / MKS MINI v2.0"));
+  Serial.println(F("DeltaCore 0.5.7 RAM-COMPACT - Mega2560 / MKS MINI v2.0"));
   printResetCause();
   Serial.println(F("Motion: rolling-commit jerk look-ahead + adaptive producer + curvature-bounded Delta segments"));
   Serial.println(F("Stepper: deterministic integer A/B/C DDA + exact segment tick budget"));
   Serial.println(F("Scheduler: deep prefill + underrun reservoir rebuild before Timer1 restart"));
+  Serial.println(F("Memory: compact MotorBlock/PathMove/pending state; immutable strings remain in Flash"));
   Serial.println(F("Serial: barrier-aware deferred command queue; M105/M112 remain immediate"));
   Serial.println(F("Debug: M971 PERF includes deterministic timer/queue health"));
   Serial.println(F("SAFE BOOT: motors disabled, G28 required before G1"));
