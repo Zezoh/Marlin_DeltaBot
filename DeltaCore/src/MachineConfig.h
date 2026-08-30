@@ -40,13 +40,13 @@ constexpr uint8_t AUTO_SMOOTHING_MAX_LEVEL = 1;
 constexpr uint16_t SMOOTH_L1_INTERVAL_TICKS = 1800;
 constexpr uint16_t SMOOTH_L2_INTERVAL_TICKS = 5000;
 
-// Rolling lookahead: 16 planned moves plus a compact ingress reservoir. The
-// cooperative preparer needs the serial layer to apply backpressure before the
-// 46-entry pending ring is physically full. Reserve 18 makes the existing total
-// admission watermark 44 moves (16 + 46 - 18), leaving two pending slots and a
-// full UART ring available while the AVR advances validation/metric samples.
+// Rolling lookahead: 16 prepared moves plus 80 compact Q8.8 command requests.
+// Each pending entry is only 8 bytes (X/Y/Z/feed), so 80 entries consume about
+// the same SRAM as the old 46-entry float reservoir. Admission stops at 78 total
+// queued moves, which accepts the complete 75-move raw-burst regression while
+// retaining 18 slots of headroom between physical capacity and the watermark.
 constexpr uint8_t PATH_QUEUE_SIZE = 16;
-constexpr uint8_t STREAM_PENDING_SIZE = 46;
+constexpr uint8_t STREAM_PENDING_SIZE = 80;
 constexpr uint8_t STREAM_ADMISSION_RESERVE = 18;
 constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
 
