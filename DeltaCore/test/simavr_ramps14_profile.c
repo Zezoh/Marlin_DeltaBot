@@ -1,13 +1,24 @@
 /* Diagnostic profiler built on the full RAMPS 1.4 HIL harness.
    It executes the real firmware ELF and attributes ATmega2560 cycles to
-   selected ELF symbols while running the short-segment torture path.
-   Compatible with Ubuntu simavr 1.6, whose avr_symbol_t has address+name only. */
+   selected ELF symbols while running a bounded representative short-segment
+   path. Compatible with Ubuntu simavr 1.6, whose avr_symbol_t has address+name
+   only. The full torture path is covered by HIL v2; this tool intentionally
+   stays small so instruction-by-instruction profiling is a practical CI gate. */
 #define main deltacore_hil_original_main
 #include "simavr_ramps14_hil.c"
 #undef main
 
 #define PROFILE_COUNT 8
 #define AVR_DATA_SEGMENT_BASE 0x00800000UL
+
+static const char PROFILE_SHORT[] =
+    "G1 X0 Y0 Z120 F7200\n"
+    "G1 X2 Y0\n"
+    "G1 X4 Y1\n"
+    "G1 X6 Y0\n"
+    "G1 X4 Y-1\n"
+    "G1 X2 Y0\n"
+    "G1 X0 Y0\n";
 
 typedef struct {
     const char *needle;
@@ -162,9 +173,9 @@ int main(int argc,char **argv) {
     reset_profiles();
     const size_t mark=s.out_len;
     const avr_cycle_count_t start=s.avr->cycle;
-    enqueue_line(&s,"M972"); enqueue_raw(&s,SHORT); enqueue_line(&s,"M400"); enqueue_line(&s,"M971");
-    const bool done=profile_wait_token(&s,mark,"echo:PATH_DONE",60000);
-    if (done) profile_wait_token(&s,mark,"health=",3000);
+    enqueue_line(&s,"M972"); enqueue_raw(&s,PROFILE_SHORT); enqueue_line(&s,"M400"); enqueue_line(&s,"M971");
+    const bool done=profile_wait_token(&s,mark,"echo:PATH_DONE",10000);
+    if (done) profile_wait_token(&s,mark,"health=",1500);
     const avr_cycle_count_t elapsed=s.avr->cycle-start;
     print_profiles(elapsed);
 
