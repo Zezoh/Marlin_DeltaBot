@@ -29,7 +29,9 @@ jobs:
           grep -q 'DeltaCore 0.5.8' DeltaCore/src/main.cpp
 
       - name: Real HIL runner syntax sanity
-        run: python3 -m py_compile DeltaCore/tools/real_hil.py
+        run: |
+          python3 -m py_compile DeltaCore/tools/real_hil.py
+          python3 -m py_compile DeltaCore/tools/run_ramps_hil_diag.py
 
       - name: Host motion tests
         run: |
@@ -72,6 +74,9 @@ jobs:
 
       - name: Build Mega2560 firmware
         run: pio run --project-dir DeltaCore -e megaatmega2560
+
+      - name: Build RAMPS full-IO diagnostic firmware
+        run: pio run --project-dir DeltaCore/hil/ramps14_diag -e megaatmega2560
 
       - name: Static SRAM budget gate
         run: |
@@ -126,4 +131,5 @@ jobs:
           path: |
             DeltaCore/.pio/build/megaatmega2560/firmware.hex
             DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
+            DeltaCore/hil/ramps14_diag/.pio/build/megaatmega2560/firmware.hex
           if-no-files-found: error
