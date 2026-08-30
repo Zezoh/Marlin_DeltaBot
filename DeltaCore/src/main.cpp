@@ -26,7 +26,10 @@ static char line_buffer[cfg::SERIAL_LINE_SIZE];
 static uint8_t line_length = 0;
 static bool discard_line = false;
 
-constexpr uint8_t DEFERRED_QUEUE_SIZE = 8;
+// A correct credit-paced host cannot build a deep queue behind G28/M400 because
+// the barrier ACK is deliberately withheld until completion. Keep a small,
+// explicit safety queue for already-in-flight lines instead of reserving 768 B.
+constexpr uint8_t DEFERRED_QUEUE_SIZE = 4;
 constexpr uint8_t DEFERRED_LINE_SIZE = 96;
 static char deferred_lines[DEFERRED_QUEUE_SIZE][DEFERRED_LINE_SIZE];
 static uint8_t deferred_head = 0;
@@ -447,7 +450,7 @@ static void serviceSerial() {
   while (Serial.available() > 0 && completed_lines < 2U && consumed_bytes < 96U) {
     // Near the actual motion-ingress capacity, stop only at a clean line
     // boundary and withhold the next ACK. A credit-paced host then pauses,
-    // while the 512-byte RX ring safely holds the few already-in-flight lines.
+    // while the 256-byte RX ring safely holds the few already-in-flight lines.
     // Unlike the old v0.5.3 high-water gate, this does not throttle normal
     // 45..75-line raw bursts far below available capacity.
     const uint8_t admission_limit = uint8_t(cfg::PATH_QUEUE_SIZE + cfg::STREAM_PENDING_SIZE - cfg::STREAM_ADMISSION_RESERVE);
