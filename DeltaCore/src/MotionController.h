@@ -57,8 +57,14 @@ public:
 private:
   enum HomeState : uint8_t { HOME_IDLE = 0, HOME_FAST, HOME_BACKOFF, HOME_SLOW };
 
+  // Compact command reservoir, not trajectory state. X/Y fit signed Q8.8 over
+  // the ±85 mm printable radius; Z fits unsigned Q8.8 over 0..225 mm. The
+  // 1/256 mm = 0.00390625 mm resolution is finer than one 80-step/mm tower
+  // step (0.0125 mm). Feed remains unsigned Q8.8 mm/s.
   struct PendingMove {
-    float target[3];
+    int16_t x_q8_8;
+    int16_t y_q8_8;
+    uint16_t z_q8_8;
     uint16_t feed_q8_8;
   };
 
@@ -100,10 +106,6 @@ private:
   PendingMove pending_[cfg::STREAM_PENDING_SIZE];
   uint8_t pending_head_, pending_tail_, pending_count_;
 
-  // Cooperative preparation of pending_[pending_tail_]. Validation keeps the
-  // original 17 tower samples and metric generation keeps the original five
-  // samples, but only one expensive IK/metric sample is performed per service
-  // pass so UART and the step producer regain control between samples.
   bool pending_prepare_active_;
   uint8_t pending_validation_sample_;
   uint8_t pending_metric_sample_;
@@ -111,6 +113,8 @@ private:
 
   bool enqueuePending(const float target[3], float feed_mm_s);
   bool dequeuePending(PendingMove &move);
+  static void decodePendingTarget(const PendingMove &move, float target[3]);
+  static void quantizeTarget(const float input[3], float output[3]);
   bool fillPlannerFromPending();
   bool startNextPlannedMove();
   bool generateOneSegment();
