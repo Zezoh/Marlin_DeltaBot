@@ -20,7 +20,6 @@ class JerkProfile {
 public:
   JerkProfile();
 
-  // Blocking wrapper retained for host/unit compatibility.
   bool configure(float length_mm,
                  float entry_speed_mm_s,
                  float exit_speed_mm_s,
@@ -28,8 +27,6 @@ public:
                  float max_accel_mm_s2,
                  float max_jerk_mm_s3);
 
-  // Realtime path: begin once, then serviceConfigure() performs at most one
-  // expensive transition-distance/transition-build slice per scheduler pass.
   bool beginConfigure(float length_mm,
                       float entry_speed_mm_s,
                       float exit_speed_mm_s,
@@ -38,6 +35,7 @@ public:
                       float max_jerk_mm_s3);
   JerkConfigureResult serviceConfigure();
   bool configuring() const { return config_state_ != CONFIG_IDLE; }
+  void cancelConfigure() { config_state_ = CONFIG_IDLE; valid_ = false; }
 
   JerkSample sample(float time_s) const;
   float totalTime() const { return total_time_s_; }
