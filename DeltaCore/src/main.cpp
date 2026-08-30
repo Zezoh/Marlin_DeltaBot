@@ -478,12 +478,31 @@ static void serviceDeferredCommands() {
   }
 }
 
+static uint8_t admissionLimit() {
+  return uint8_t(cfg::PATH_QUEUE_SIZE + cfg::STREAM_PENDING_SIZE - cfg::STREAM_ADMISSION_RESERVE);
+}
+
+static bool serialIngressBlockedByMotionCapacity() {
+  return !discard_line && line_length == 0 && motion.queuedMoves() >= admissionLimit();
+}
+
 static void serviceSerial() {
+  // The AVR profiler has measured path-planning calls close to 10 ms. At
+  // 250000 baud that is ~250 incoming bytes, so a fixed two-line slice can
+  // overflow HardwareSerial even with a large RX ring. Drain aggressively when
+  // RX pressure is high; only stop at a clean line boundary when motion ingress
+  // capacity itself is full, in which case the motion producer must run.
+  const int initial_available = Serial.available();
+  uint8_t line_budget = 2U;
+  uint16_t byte_budget = 96U;
+  if (initial_available >= 192) { line_budget = 16U; byte_budget = 448U; }
+  else if (initial_available >= 96) { line_budget = 10U; byte_budget = 320U; }
+  else if (initial_available >= 48) { line_budget = 6U; byte_budget = 192U; }
+
   uint8_t completed_lines = 0;
-  uint8_t consumed_bytes = 0;
-  while (Serial.available() > 0 && completed_lines < 2U && consumed_bytes < 96U) {
-    const uint8_t admission_limit = uint8_t(cfg::PATH_QUEUE_SIZE + cfg::STREAM_PENDING_SIZE - cfg::STREAM_ADMISSION_RESERVE);
-    if (!discard_line && line_length == 0 && motion.queuedMoves() >= admission_limit) return;
+  uint16_t consumed_bytes = 0;
+  while (Serial.available() > 0 && completed_lines < line_budget && consumed_bytes < byte_budget) {
+    if (serialIngressBlockedByMotionCapacity()) return;
 
     const int raw = Serial.read();
     if (raw < 0) break;
@@ -503,7 +522,6 @@ static void serviceSerial() {
       continue;
     }
 
-    // Reject non-printable transport garbage, but resynchronize only at newline.
     if (c != '\n' && c != '\t' && (uint8_t(c) < 0x20U || uint8_t(c) > 0x7EU)) {
       discard_line = true;
       continue;
@@ -563,9 +581,9 @@ void setup() {
   printResetCause();
   Serial.println(F("Motion: rolling-commit jerk look-ahead + adaptive producer + curvature-bounded Delta segments"));
   Serial.println(F("Stepper: deterministic integer A/B/C DDA + exact segment tick budget"));
-  Serial.println(F("Scheduler: deep prefill + underrun reservoir rebuild before Timer1 restart"));
+  Serial.println(F("Scheduler: RX-pressure-aware serial drain + deep prefill + underrun recovery"));
   Serial.println(F("Memory: compact MotorBlock/PathMove/pending state; immutable strings remain in Flash"));
-  Serial.println(F("Serial: strict fail-closed parser + barrier-aware deferred queue; M105/M112 remain immediate"));
+  Serial.println(F("Serial: strict fail-closed parser + pressure-aware ingress; M105/M112 remain immediate"));
   Serial.println(F("Debug: M971 PERF includes deterministic timer/queue health"));
   Serial.println(F("SAFE BOOT: motors disabled, G28 required before G1"));
   Serial.println(F("ok READY"));
@@ -574,8 +592,20 @@ void setup() {
 void loop() {
   serviceSerial();
   stepper.servicePrefetch();
-  motion.service();
+
+  const bool ingress_blocked = serialIngressBlockedByMotionCapacity();
+  const bool urgent_motion = motion.moving() && motion_queue.count() < cfg::MOTION_REFILL_LOW_WATER;
+  const bool rx_pending = Serial.available() > 0;
+
+  // Do not enter a potentially ~10 ms planning call while UART still has work
+  // that can be drained. The only exceptions are real motion-refill urgency or
+  // an ingress-capacity block where motion must advance to make queue room.
+  if (!rx_pending || ingress_blocked || urgent_motion) motion.service();
   stepper.servicePrefetch();
+
+  // After any urgent producer work, immediately give RX another chance before
+  // considering a second motion slice.
+  if (Serial.available() > 0) serviceSerial();
 
   if (Serial.available() == 0 && motion.moving() &&
       motion_queue.count() < cfg::MOTION_REFILL_LOW_WATER) {
