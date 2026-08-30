@@ -18,8 +18,8 @@ MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper,
     homed_(false), home_state_(HOME_IDLE), event_(EVENT_NONE), last_request_error_(REQUEST_OK),
     current_xyz_{0,0,0}, command_xyz_{0,0,0}, generated_xyz_{0,0,0}, home_motor_steps_{0,0,0},
     stream_active_(false), motion_started_(false), generating_move_(false), planner_plan_valid_(false),
-    flush_requested_(false), last_enqueue_ms_(0), carry_entry_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S),
-    committed_exit_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S),
+    profile_prepare_active_(false), flush_requested_(false), last_enqueue_ms_(0),
+    carry_entry_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S), committed_exit_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S),
     generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_tower_mm_{0,0,0},
     segment_length_limit_mm_(cfg::MAX_SEGMENT_MM), generated_motor_steps_{0,0,0},
     final_motor_steps_{0,0,0}, profile_(), acceleration_mm_s2_(cfg::DEFAULT_ACCEL_MM_S2),
@@ -43,6 +43,8 @@ void MotionController::begin() {
   motion_started_ = false;
   generating_move_ = false;
   planner_plan_valid_ = false;
+  profile_prepare_active_ = false;
+  profile_.cancelConfigure();
   flush_requested_ = false;
   smoothing_mode_ = -1;
   carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
@@ -61,10 +63,12 @@ void MotionController::invalidatePosition() {
   stream_active_ = false;
   generating_move_ = false;
   planner_plan_valid_ = false;
+  profile_prepare_active_ = false;
+  profile_.cancelConfigure();
 }
 
 bool MotionController::busy() const {
-  return stream_active_ || generating_move_ || !planner_.empty() || pending_count_ ||
+  return stream_active_ || generating_move_ || profile_prepare_active_ || !planner_.empty() || pending_count_ ||
          home_state_ != HOME_IDLE || stepper_.motionBusy() || !queue_.empty();
 }
 
@@ -102,6 +106,8 @@ RequestResult MotionController::requestHome() {
   homed_ = false;
   planner_.clear();
   planner_plan_valid_ = false;
+  profile_prepare_active_ = false;
+  profile_.cancelConfigure();
   pending_head_ = pending_tail_ = pending_count_ = 0;
   resetPendingPreparation();
   queue_.clear();
@@ -122,9 +128,12 @@ void MotionController::quantizeTarget(const float input[3], float output[3]) {
   long x = lroundf(input[0] * Q8_SCALE);
   long y = lroundf(input[1] * Q8_SCALE);
   long z = lroundf(input[2] * Q8_SCALE);
-  if (x < -32768L) x = -32768L; if (x > 32767L) x = 32767L;
-  if (y < -32768L) y = -32768L; if (y > 32767L) y = 32767L;
-  if (z < 0L) z = 0L; if (z > 65535L) z = 65535L;
+  if (x < -32768L) x = -32768L;
+  if (x > 32767L) x = 32767L;
+  if (y < -32768L) y = -32768L;
+  if (y > 32767L) y = 32767L;
+  if (z < 0L) z = 0L;
+  if (z > 65535L) z = 65535L;
   output[0] = float(int16_t(x)) * Q8_INV;
   output[1] = float(int16_t(y)) * Q8_INV;
   output[2] = float(uint16_t(z)) * Q8_INV;
@@ -170,7 +179,8 @@ bool MotionController::fillPlannerFromPending() {
   if (planner_.full()) return true;
 
   const PendingMove &p = pending_[pending_tail_];
-  float target[3]; decodePendingTarget(p, target);
+  float target[3];
+  decodePendingTarget(p, target);
   float start[3];
   if (!planner_.empty()) planner_.latestTarget(start);
   else for (uint8_t a = 0; a < 3; ++a) start[a] = generated_xyz_[a];
@@ -183,8 +193,6 @@ bool MotionController::fillPlannerFromPending() {
     pending_metrics_.max_curvature = 0.0f;
   }
 
-  // Exact continuous-line validation replaces the old 17 sampled IK checks.
-  // Run it once, then yield immediately so the scheduler remains cooperative.
   if (pending_validation_sample_ == 0U) {
     if (!kinematics_.pathWithinTowerHome(start, target, home_motor_steps_)) return false;
     pending_validation_sample_ = 1U;
@@ -208,11 +216,10 @@ bool MotionController::fillPlannerFromPending() {
     return true;
   }
 
-  if (generating_move_ || planner_.planning()) return true;
+  if (generating_move_ || profile_prepare_active_ || planner_.planning()) return true;
 
   const float feed_mm_s = float(p.feed_q8_8) * Q8_INV;
-  if (!planner_.enqueuePrepared(start, target, feed_mm_s, acceleration_mm_s2_, pending_metrics_))
-    return false;
+  if (!planner_.enqueuePrepared(start, target, feed_mm_s, acceleration_mm_s2_, pending_metrics_)) return false;
 
   PendingMove consumed;
   if (!dequeuePending(consumed)) return false;
@@ -231,7 +238,8 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   if (feed_mm_s > cfg::MAX_CARTESIAN_FEED_MM_S) feed_mm_s = cfg::MAX_CARTESIAN_FEED_MM_S;
   default_feed_mm_s_ = feed_mm_s;
 
-  float target[3]; quantizeTarget(target_xyz, target);
+  float target[3];
+  quantizeTarget(target_xyz, target);
   if (!kinematics_.withinSoftBounds(target)) return last_request_error_ = REQUEST_OUT_OF_BOUNDS;
 
   float delta2 = 0.0f;
@@ -241,8 +249,7 @@ RequestResult MotionController::requestMove(const float target_xyz[3], float fee
   }
   if (delta2 < 0.00000025f) return last_request_error_ = REQUEST_OK;
 
-  if (!enqueuePending(target, feed_mm_s))
-    return last_request_error_ = REQUEST_QUEUE_FULL;
+  if (!enqueuePending(target, feed_mm_s)) return last_request_error_ = REQUEST_QUEUE_FULL;
 
   for (uint8_t a = 0; a < 3; ++a) command_xyz_[a] = target[a];
   last_enqueue_ms_ = millis();
@@ -272,21 +279,34 @@ bool MotionController::initGeneratingMove(const PathMove &m) {
   for (uint8_t axis = 0; axis < 3; ++axis)
     generated_motor_steps_[axis] = int32_t(lroundf(generated_tower_mm_[axis] * cfg::STEPS_PER_MM));
   if (!kinematics_.cartesianToSteps(m.target, final_motor_steps_)) return false;
+
   segment_length_limit_mm_ = cfg::MAX_SEGMENT_MM;
   if (m.max_tower_curvature > 1.0e-7f) {
     float chord_ds = sqrtf((8.0f * cfg::MAX_TOWER_CHORD_ERROR_MM) / m.max_tower_curvature) * 0.70f;
     if (chord_ds < segment_length_limit_mm_) segment_length_limit_mm_ = chord_ds;
   }
   if (segment_length_limit_mm_ < 0.05f) segment_length_limit_mm_ = 0.05f;
-  return profile_.configure(m.length_mm, m.entry_speed_mm_s, m.exit_speed_mm_s,
-                            m.nominal_speed_mm_s, m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
+
+  return profile_.beginConfigure(m.length_mm, m.entry_speed_mm_s, m.exit_speed_mm_s,
+                                 m.nominal_speed_mm_s, m.accel_mm_s2, cfg::DEFAULT_JERK_MM_S3);
 }
 
 bool MotionController::startNextPlannedMove() {
   if (generating_move_ || !canCommitNextMove() || !planner_plan_valid_ || planner_.planning()) return false;
   const PathMove &m = planner_.move(0);
-  committed_exit_speed_mm_s_ = m.exit_speed_mm_s;
-  if (!initGeneratingMove(m)) return false;
+
+  if (!profile_prepare_active_) {
+    committed_exit_speed_mm_s_ = m.exit_speed_mm_s;
+    if (!initGeneratingMove(m)) return false;
+    profile_prepare_active_ = true;
+    return true;
+  }
+
+  const JerkConfigureResult r = profile_.serviceConfigure();
+  if (r == JERK_CONFIG_ERROR || r == JERK_CONFIG_IDLE) return false;
+  if (r == JERK_CONFIG_BUSY) return true;
+
+  profile_prepare_active_ = false;
   generating_move_ = true;
   stream_active_ = true;
   return true;
@@ -327,6 +347,7 @@ bool MotionController::generateOneSegment() {
   if (next_time > profile_.totalTime()) next_time = profile_.totalTime();
   const float actual_dt = next_time - generated_time_s_;
   const bool final_segment = next_time >= profile_.totalTime() - 1.0e-7f;
+
   float endpoint[3];
   if (final_segment) {
     for (uint8_t a = 0; a < 3; ++a) endpoint[a] = m.target[a];
@@ -336,12 +357,20 @@ bool MotionController::generateOneSegment() {
     endpoint[1] = m.start[1] + m.unit[1] * js1.distance_mm;
     endpoint[2] = m.start[2] + m.unit[2] * js1.distance_mm;
   }
-  float tower_end[3]; int32_t target_steps[3];
+
+  float tower_end[3];
+  int32_t target_steps[3];
   if (!kinematics_.cartesianToTower(endpoint, tower_end)) return false;
-  if (final_segment) for (uint8_t a = 0; a < 3; ++a) target_steps[a] = final_motor_steps_[a];
-  else for (uint8_t a = 0; a < 3; ++a) target_steps[a] = int32_t(lroundf(tower_end[a] * cfg::STEPS_PER_MM));
+  if (final_segment) {
+    for (uint8_t a = 0; a < 3; ++a) target_steps[a] = final_motor_steps_[a];
+  } else {
+    for (uint8_t a = 0; a < 3; ++a)
+      target_steps[a] = int32_t(lroundf(tower_end[a] * cfg::STEPS_PER_MM));
+  }
   if (!towerWithinHome(target_steps)) return false;
-  MotorBlock block = {}; uint8_t max_steps = 0;
+
+  MotorBlock block = {};
+  uint8_t max_steps = 0;
   for (uint8_t a = 0; a < 3; ++a) {
     const int32_t d = target_steps[a] - generated_motor_steps_[a];
     const uint32_t mag = d >= 0 ? uint32_t(d) : uint32_t(-d);
@@ -353,17 +382,28 @@ bool MotionController::generateOneSegment() {
   block.event_count = max_steps ? max_steps : 1U;
   uint32_t total_ticks = uint32_t(actual_dt * float(cfg::TIMER_HZ) + 0.5f);
   if (total_ticks < block.event_count) return false;
+
   const uint32_t minimum_schedulable_ticks = uint32_t(block.event_count) * uint32_t(cfg::MIN_EVENT_INTERVAL_TICKS);
-  if (total_ticks < minimum_schedulable_ticks) { if (!final_segment) return false; total_ticks = minimum_schedulable_ticks; }
+  if (total_ticks < minimum_schedulable_ticks) {
+    if (!final_segment) return false;
+    total_ticks = minimum_schedulable_ticks;
+  }
   const uint32_t base = total_ticks / block.event_count;
   if (base < cfg::MIN_EVENT_INTERVAL_TICKS || base > cfg::MAX_EVENT_INTERVAL_TICKS) return false;
   block.interval_base_ticks = uint16_t(base);
   block.interval_remainder_ticks = uint8_t(total_ticks % block.event_count);
   if (!queue_.enqueue(block)) return false;
-  generated_time_s_ = next_time; generated_distance_mm_ = js1.distance_mm;
-  for (uint8_t a = 0; a < 3; ++a) { generated_motor_steps_[a] = target_steps[a]; generated_tower_mm_[a] = tower_end[a]; }
+
+  generated_time_s_ = next_time;
+  generated_distance_mm_ = js1.distance_mm;
+  for (uint8_t a = 0; a < 3; ++a) {
+    generated_motor_steps_[a] = target_steps[a];
+    generated_tower_mm_[a] = tower_end[a];
+  }
+
   if (generated_time_s_ >= profile_.totalTime() - 1.0e-7f) {
-    for (uint8_t a = 0; a < 3; ++a) if (generated_motor_steps_[a] != final_motor_steps_[a]) return false;
+    for (uint8_t a = 0; a < 3; ++a)
+      if (generated_motor_steps_[a] != final_motor_steps_[a]) return false;
     for (uint8_t a = 0; a < 3; ++a) generated_xyz_[a] = m.target[a];
     carry_entry_speed_mm_s_ = committed_exit_speed_mm_s_;
     if (!planner_.popFront()) return false;
@@ -376,82 +416,200 @@ bool MotionController::generateOneSegment() {
 void MotionController::finishHome() {
   const float home_xyz[3] = {0.0f, 0.0f, cfg::DELTA_HEIGHT_MM};
   int32_t home_steps[3];
-  if (!kinematics_.cartesianToSteps(home_xyz, home_steps)) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return; }
-  for (uint8_t axis = 0; axis < 3; ++axis) { current_xyz_[axis]=home_xyz[axis]; command_xyz_[axis]=home_xyz[axis]; generated_xyz_[axis]=home_xyz[axis]; home_motor_steps_[axis]=home_steps[axis]; }
+  if (!kinematics_.cartesianToSteps(home_xyz, home_steps)) {
+    stepper_.emergencyStop(FAULT_INTERNAL);
+    failController();
+    return;
+  }
+  for (uint8_t axis = 0; axis < 3; ++axis) {
+    current_xyz_[axis] = home_xyz[axis];
+    command_xyz_[axis] = home_xyz[axis];
+    generated_xyz_[axis] = home_xyz[axis];
+    home_motor_steps_[axis] = home_steps[axis];
+  }
   stepper_.setMotorPositionSteps(home_steps);
-  carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S; planner_plan_valid_ = false; resetPendingPreparation();
-  homed_ = true; home_state_ = HOME_IDLE; event_ = EVENT_HOME_DONE;
+  carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
+  planner_plan_valid_ = false;
+  profile_prepare_active_ = false;
+  profile_.cancelConfigure();
+  resetPendingPreparation();
+  homed_ = true;
+  home_state_ = HOME_IDLE;
+  event_ = EVENT_HOME_DONE;
 }
 
 void MotionController::finishStream() {
-  for (uint8_t a=0;a<3;++a) current_xyz_[a]=command_xyz_[a];
-  stream_active_=false; motion_started_=false; generating_move_=false; planner_plan_valid_=false; flush_requested_=false;
-  carry_entry_speed_mm_s_=cfg::MIN_PROFILE_SPEED_MM_S; committed_exit_speed_mm_s_=cfg::MIN_PROFILE_SPEED_MM_S;
-  resetPendingPreparation(); event_=EVENT_MOVE_DONE;
+  for (uint8_t a = 0; a < 3; ++a) current_xyz_[a] = command_xyz_[a];
+  stream_active_ = false;
+  motion_started_ = false;
+  generating_move_ = false;
+  planner_plan_valid_ = false;
+  profile_prepare_active_ = false;
+  profile_.cancelConfigure();
+  flush_requested_ = false;
+  carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
+  committed_exit_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
+  resetPendingPreparation();
+  event_ = EVENT_MOVE_DONE;
 }
 
 void MotionController::failController() {
-  stream_active_=false; motion_started_=false; generating_move_=false; planner_plan_valid_=false; flush_requested_=false;
-  planner_.clear(); pending_head_=pending_tail_=pending_count_=0; resetPendingPreparation(); queue_.clear(); home_state_=HOME_IDLE; homed_=false; event_=EVENT_FAULT;
+  stream_active_ = false;
+  motion_started_ = false;
+  generating_move_ = false;
+  planner_plan_valid_ = false;
+  profile_prepare_active_ = false;
+  profile_.cancelConfigure();
+  flush_requested_ = false;
+  planner_.clear();
+  pending_head_ = pending_tail_ = pending_count_ = 0;
+  resetPendingPreparation();
+  queue_.clear();
+  home_state_ = HOME_IDLE;
+  homed_ = false;
+  event_ = EVENT_FAULT;
 }
 
 void MotionController::service() {
-  if (stepper_.fault()!=FAULT_NONE) { if (busy()) failController(); return; }
-  if (home_state_!=HOME_IDLE) {
-    const HomeResult result=stepper_.homeResult();
-    if (result==HOME_RESULT_FAILED) { stepper_.clearHomeResult(); failController(); return; }
-    if (result==HOME_RESULT_DONE) {
+  if (stepper_.fault() != FAULT_NONE) {
+    if (busy()) failController();
+    return;
+  }
+
+  if (home_state_ != HOME_IDLE) {
+    const HomeResult result = stepper_.homeResult();
+    if (result == HOME_RESULT_FAILED) {
       stepper_.clearHomeResult();
-      if (home_state_==HOME_FAST) { if (!stepper_.startHomeBackoff()) { failController(); return; } home_state_=HOME_BACKOFF; }
-      else if (home_state_==HOME_BACKOFF) { if (stepper_.endstopMask()!=0) { stepper_.emergencyStop(FAULT_ENDSTOP_STUCK); failController(); return; } if (!stepper_.startHomeSeek(true)) { failController(); return; } home_state_=HOME_SLOW; }
-      else if (home_state_==HOME_SLOW) finishHome();
+      failController();
+      return;
+    }
+    if (result == HOME_RESULT_DONE) {
+      stepper_.clearHomeResult();
+      if (home_state_ == HOME_FAST) {
+        if (!stepper_.startHomeBackoff()) { failController(); return; }
+        home_state_ = HOME_BACKOFF;
+      } else if (home_state_ == HOME_BACKOFF) {
+        if (stepper_.endstopMask() != 0) {
+          stepper_.emergencyStop(FAULT_ENDSTOP_STUCK);
+          failController();
+          return;
+        }
+        if (!stepper_.startHomeSeek(true)) { failController(); return; }
+        home_state_ = HOME_SLOW;
+      } else if (home_state_ == HOME_SLOW) {
+        finishHome();
+      }
     }
     return;
   }
-  const bool may_prepare_pending=pending_count_ && (!stream_active_ || planner_.count()<=LOOKAHEAD_REFILL_TRIGGER_MOVES);
-  if (may_prepare_pending && !fillPlannerFromPending()) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return; }
+
+  const bool may_prepare_pending = pending_count_ &&
+    (!stream_active_ || planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES);
+  if (may_prepare_pending && !fillPlannerFromPending()) {
+    stepper_.emergencyStop(FAULT_INTERNAL);
+    failController();
+    return;
+  }
+
   if (!stream_active_ && !planner_.empty()) {
-    const bool all_ingress_prepared=!pending_count_ && !pending_prepare_active_;
-    if (planner_.full() || (all_ingress_prepared && streamClosed())) stream_active_=true;
+    const bool all_ingress_prepared = !pending_count_ && !pending_prepare_active_;
+    if (planner_.full() || (all_ingress_prepared && streamClosed())) stream_active_ = true;
   }
-  if (motion_started_ && stream_active_ && !stepper_.executionActive()) motion_started_=false;
-  if (!generating_move_ && stream_active_ && canCommitNextMove() && !planner_plan_valid_) {
-    if (!planner_.planning() && !planner_.beginPlan(carry_entry_speed_mm_s_)) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return; }
-    const PlannerStepResult r=planner_.servicePlan();
-    if (r==PLANNER_STEP_ERROR) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return; }
-    if (r==PLANNER_STEP_DONE) planner_plan_valid_=true;
+
+  if (motion_started_ && stream_active_ && !stepper_.executionActive()) motion_started_ = false;
+
+  if (!generating_move_ && !profile_prepare_active_ && stream_active_ &&
+      canCommitNextMove() && !planner_plan_valid_) {
+    if (!planner_.planning() && !planner_.beginPlan(carry_entry_speed_mm_s_)) {
+      stepper_.emergencyStop(FAULT_INTERNAL);
+      failController();
+      return;
+    }
+    const PlannerStepResult r = planner_.servicePlan();
+    if (r == PLANNER_STEP_ERROR) {
+      stepper_.emergencyStop(FAULT_INTERNAL);
+      failController();
+      return;
+    }
+    if (r == PLANNER_STEP_DONE) planner_plan_valid_ = true;
   }
-  const bool refill_urgent=queue_.count()<cfg::MOTION_REFILL_LOW_WATER;
-  const uint8_t burst_limit=refill_urgent?cfg::MOTION_REFILL_MAX_BURST:1U;
-  const uint32_t refill_started_us=micros(); uint8_t produced=0;
-  while (produced<burst_limit && queue_.freeSlots()>1U) {
+
+  const bool refill_urgent = queue_.count() < cfg::MOTION_REFILL_LOW_WATER;
+  const uint8_t burst_limit = refill_urgent ? cfg::MOTION_REFILL_MAX_BURST : 1U;
+  const uint32_t refill_started_us = micros();
+  uint8_t produced = 0;
+  while (produced < burst_limit && queue_.freeSlots() > 1U) {
     if (!generating_move_) {
       if (!(stream_active_ && canCommitNextMove())) break;
       if (!planner_plan_valid_ || planner_.planning()) break;
-      if (!startNextPlannedMove()) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return; }
+      if (!startNextPlannedMove()) {
+        stepper_.emergencyStop(FAULT_INTERNAL);
+        failController();
+        return;
+      }
+      // Profile construction is cooperative. Yield after exactly one setup or
+      // solver slice so serial ingress and prefetch run before the next slice.
+      if (!generating_move_) break;
     }
-    if (!generateOneSegment()) { stepper_.emergencyStop(FAULT_INTERNAL); failController(); return; }
+
+    if (!generateOneSegment()) {
+      stepper_.emergencyStop(FAULT_INTERNAL);
+      failController();
+      return;
+    }
     ++produced;
-    if (queue_.count()>=cfg::MOTION_REFILL_TARGET) break;
-    if (uint32_t(micros()-refill_started_us)>=cfg::MOTION_REFILL_BUDGET_US) break;
-    if (queue_.count()>=cfg::MOTION_REFILL_LOW_WATER && Serial.available()>0) break;
+    if (queue_.count() >= cfg::MOTION_REFILL_TARGET) break;
+    if (uint32_t(micros() - refill_started_us) >= cfg::MOTION_REFILL_BUDGET_US) break;
+    if (queue_.count() >= cfg::MOTION_REFILL_LOW_WATER && Serial.available() > 0) break;
   }
+
   if (!motion_started_) {
-    const bool fully_generated=streamClosed() && !generating_move_ && planner_.empty() && !pending_count_;
-    if (!queue_.empty() && (queue_.count()>=cfg::MOTION_START_PREFILL_BLOCKS || fully_generated)) { stepper_.kickMotion(); motion_started_=true; }
-  } else stepper_.kickMotion();
-  const bool all_generated=streamClosed() && !generating_move_ && planner_.empty() && !pending_count_;
+    const bool fully_generated = streamClosed() && !generating_move_ && !profile_prepare_active_ &&
+      planner_.empty() && !pending_count_;
+    if (!queue_.empty() && (queue_.count() >= cfg::MOTION_START_PREFILL_BLOCKS || fully_generated)) {
+      stepper_.kickMotion();
+      motion_started_ = true;
+    }
+  } else {
+    stepper_.kickMotion();
+  }
+
+  const bool all_generated = streamClosed() && !generating_move_ && !profile_prepare_active_ &&
+    planner_.empty() && !pending_count_;
   if (stream_active_ && all_generated && queue_.empty() && !stepper_.motionBusy()) finishStream();
 }
 
 void MotionController::emergencyStop() {
-  stepper_.emergencyStop(FAULT_ESTOP); queue_.clear(); planner_.clear(); pending_head_=pending_tail_=pending_count_=0; resetPendingPreparation();
-  homed_=false; home_state_=HOME_IDLE; stream_active_=false; motion_started_=false; generating_move_=false; planner_plan_valid_=false; flush_requested_=false; event_=EVENT_FAULT;
+  stepper_.emergencyStop(FAULT_ESTOP);
+  queue_.clear();
+  planner_.clear();
+  pending_head_ = pending_tail_ = pending_count_ = 0;
+  resetPendingPreparation();
+  profile_prepare_active_ = false;
+  profile_.cancelConfigure();
+  homed_ = false;
+  home_state_ = HOME_IDLE;
+  stream_active_ = false;
+  motion_started_ = false;
+  generating_move_ = false;
+  planner_plan_valid_ = false;
+  flush_requested_ = false;
+  event_ = EVENT_FAULT;
 }
 
 bool MotionController::clearFault() {
-  if (busy()) return false; if (!stepper_.clearFault()) return false;
-  event_=EVENT_NONE; homed_=false; stream_active_=false; motion_started_=false; generating_move_=false; planner_plan_valid_=false; resetPendingPreparation(); return true;
+  if (busy()) return false;
+  if (!stepper_.clearFault()) return false;
+  event_ = EVENT_NONE;
+  homed_ = false;
+  stream_active_ = false;
+  motion_started_ = false;
+  generating_move_ = false;
+  planner_plan_valid_ = false;
+  profile_prepare_active_ = false;
+  profile_.cancelConfigure();
+  resetPendingPreparation();
+  return true;
 }
 
 } // namespace deltacore
