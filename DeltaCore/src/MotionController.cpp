@@ -7,6 +7,7 @@
 namespace deltacore {
 
 static constexpr uint8_t LOOKAHEAD_RESERVE_MOVES = 4;
+static constexpr uint8_t LOOKAHEAD_REFILL_TRIGGER_MOVES = 8;
 static constexpr uint8_t METRIC_SAMPLE_COUNT = 5;
 static constexpr float Q8_SCALE = 256.0f;
 static constexpr float Q8_INV = 1.0f / Q8_SCALE;
@@ -17,7 +18,7 @@ MotionController::MotionController(MotionQueue &queue, StepperEngine &stepper,
     homed_(false), home_state_(HOME_IDLE), event_(EVENT_NONE), last_request_error_(REQUEST_OK),
     current_xyz_{0,0,0}, command_xyz_{0,0,0}, generated_xyz_{0,0,0}, home_motor_steps_{0,0,0},
     stream_active_(false), motion_started_(false), generating_move_(false), planner_plan_valid_(false),
-    profile_prepare_active_(false), flush_requested_(false), last_enqueue_ms_(0),
+    profile_prepare_active_(false), lookahead_refill_active_(false), flush_requested_(false), last_enqueue_ms_(0),
     carry_entry_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S), committed_exit_speed_mm_s_(cfg::MIN_PROFILE_SPEED_MM_S),
     generated_time_s_(0.0f), generated_distance_mm_(0.0f), generated_tower_mm_{0,0,0},
     segment_length_limit_mm_(cfg::MAX_SEGMENT_MM), generated_motor_steps_{0,0,0},
@@ -43,6 +44,7 @@ void MotionController::begin() {
   generating_move_ = false;
   planner_plan_valid_ = false;
   profile_prepare_active_ = false;
+  lookahead_refill_active_ = false;
   profile_.cancelConfigure();
   flush_requested_ = false;
   smoothing_mode_ = -1;
@@ -63,6 +65,7 @@ void MotionController::invalidatePosition() {
   generating_move_ = false;
   planner_plan_valid_ = false;
   profile_prepare_active_ = false;
+  lookahead_refill_active_ = false;
   profile_.cancelConfigure();
 }
 
@@ -106,6 +109,7 @@ RequestResult MotionController::requestHome() {
   planner_.clear();
   planner_plan_valid_ = false;
   profile_prepare_active_ = false;
+  lookahead_refill_active_ = false;
   profile_.cancelConfigure();
   pending_head_ = pending_tail_ = pending_count_ = 0;
   resetPendingPreparation();
@@ -198,6 +202,11 @@ bool MotionController::fillPlannerFromPending() {
     return true;
   }
 
+  // Once a pending move is fully prepared during current-move generation,
+  // keep it staged until the deterministic refill boundary. Avoid repeating a
+  // sqrt-heavy length calculation every service pass while waiting to commit.
+  if (generating_move_ && pending_metric_sample_ >= METRIC_SAMPLE_COUNT) return true;
+
   float unit[3];
   float len2 = 0.0f;
   for (uint8_t a = 0; a < 3; ++a) {
@@ -215,11 +224,10 @@ bool MotionController::fillPlannerFromPending() {
     return true;
   }
 
-  // Appending to the ring tail is safe while the current move is already
-  // generating: the head PathMove and its JerkProfile are immutable. Do not
-  // append while a planner pass or a not-yet-committed profile is in flight,
-  // because that would invalidate the solution being prepared.
-  if (profile_prepare_active_ || planner_.planning()) return true;
+  // v0.5.7 keeps the active lookahead solution immutable. Preparation is
+  // allowed during generation, but planner-tail mutation waits for a move
+  // boundary; the refill mode then fills back toward 16 before replanning.
+  if (generating_move_ || profile_prepare_active_ || planner_.planning()) return true;
 
   const float feed_mm_s = float(p.feed_q8_8) * Q8_INV;
   if (!planner_.enqueuePrepared(start, target, feed_mm_s, acceleration_mm_s2_, pending_metrics_)) return false;
@@ -434,6 +442,7 @@ void MotionController::finishHome() {
   carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
   planner_plan_valid_ = false;
   profile_prepare_active_ = false;
+  lookahead_refill_active_ = false;
   profile_.cancelConfigure();
   resetPendingPreparation();
   homed_ = true;
@@ -448,6 +457,7 @@ void MotionController::finishStream() {
   generating_move_ = false;
   planner_plan_valid_ = false;
   profile_prepare_active_ = false;
+  lookahead_refill_active_ = false;
   profile_.cancelConfigure();
   flush_requested_ = false;
   carry_entry_speed_mm_s_ = cfg::MIN_PROFILE_SPEED_MM_S;
@@ -462,6 +472,7 @@ void MotionController::failController() {
   generating_move_ = false;
   planner_plan_valid_ = false;
   profile_prepare_active_ = false;
+  lookahead_refill_active_ = false;
   profile_.cancelConfigure();
   flush_requested_ = false;
   planner_.clear();
@@ -506,11 +517,18 @@ void MotionController::service() {
     return;
   }
 
-  // Keep the rolling window as full as possible. Preparation may run while the
-  // current committed move is generating, and completed moves append only to
-  // the ring tail. Replanning is still forbidden until the move boundary.
-  const bool may_prepare_pending = pending_count_ && !planner_.full();
-  if (may_prepare_pending && !fillPlannerFromPending()) {
+  // Match v0.5.7 rolling-window semantics exactly: the initial window is built
+  // to 16. During streaming, once the planned tail reaches 8 moves, enter a
+  // latched refill mode and do not replan until that window has been restored
+  // to 16 (or pending ingress is exhausted). Expensive validation/metrics stay
+  // cooperative, but the motion solution no longer depends on CPU cadence.
+  if (stream_active_ && !lookahead_refill_active_ && pending_count_ &&
+      planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES)
+    lookahead_refill_active_ = true;
+
+  const bool initial_fill = !stream_active_ && pending_count_ && !planner_.full();
+  const bool refill_work = lookahead_refill_active_ && pending_count_ && !planner_.full();
+  if ((initial_fill || refill_work) && !fillPlannerFromPending()) {
     stepper_.emergencyStop(FAULT_INTERNAL);
     failController();
     return;
@@ -521,10 +539,21 @@ void MotionController::service() {
     if (planner_.full() || (all_ingress_prepared && streamClosed())) stream_active_ = true;
   }
 
+  // At a move boundary, a latched refill must complete before the next planner
+  // pass. While the current move is still generating we may precompute one
+  // pending move, but it remains staged and cannot alter the active solution.
+  if (lookahead_refill_active_ && !generating_move_ && !profile_prepare_active_) {
+    if (planner_.full() || !pending_count_) {
+      lookahead_refill_active_ = false;
+    } else {
+      return;
+    }
+  }
+
   if (motion_started_ && stream_active_ && !stepper_.executionActive()) motion_started_ = false;
 
-  if (!generating_move_ && !profile_prepare_active_ && stream_active_ &&
-      canCommitNextMove() && !planner_plan_valid_) {
+  if (!generating_move_ && !profile_prepare_active_ && !lookahead_refill_active_ &&
+      stream_active_ && canCommitNextMove() && !planner_plan_valid_) {
     if (!planner_.planning() && !planner_.beginPlan(carry_entry_speed_mm_s_)) {
       stepper_.emergencyStop(FAULT_INTERNAL);
       failController();
@@ -545,6 +574,7 @@ void MotionController::service() {
   uint8_t produced = 0;
   while (produced < burst_limit && queue_.freeSlots() > 1U) {
     if (!generating_move_) {
+      if (lookahead_refill_active_) break;
       if (!(stream_active_ && canCommitNextMove())) break;
       if (!planner_plan_valid_ || planner_.planning()) break;
       if (!startNextPlannedMove()) {
@@ -568,7 +598,7 @@ void MotionController::service() {
 
   if (!motion_started_) {
     const bool fully_generated = streamClosed() && !generating_move_ && !profile_prepare_active_ &&
-      planner_.empty() && !pending_count_;
+      !lookahead_refill_active_ && planner_.empty() && !pending_count_;
     if (!queue_.empty() && (queue_.count() >= cfg::MOTION_START_PREFILL_BLOCKS || fully_generated)) {
       stepper_.kickMotion();
       motion_started_ = true;
@@ -578,7 +608,7 @@ void MotionController::service() {
   }
 
   const bool all_generated = streamClosed() && !generating_move_ && !profile_prepare_active_ &&
-    planner_.empty() && !pending_count_;
+    !lookahead_refill_active_ && planner_.empty() && !pending_count_;
   if (stream_active_ && all_generated && queue_.empty() && !stepper_.motionBusy()) finishStream();
 }
 
@@ -589,6 +619,7 @@ void MotionController::emergencyStop() {
   pending_head_ = pending_tail_ = pending_count_ = 0;
   resetPendingPreparation();
   profile_prepare_active_ = false;
+  lookahead_refill_active_ = false;
   profile_.cancelConfigure();
   homed_ = false;
   home_state_ = HOME_IDLE;
@@ -610,6 +641,7 @@ bool MotionController::clearFault() {
   generating_move_ = false;
   planner_plan_valid_ = false;
   profile_prepare_active_ = false;
+  lookahead_refill_active_ = false;
   profile_.cancelConfigure();
   resetPendingPreparation();
   return true;
