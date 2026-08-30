@@ -202,9 +202,6 @@ bool MotionController::fillPlannerFromPending() {
     return true;
   }
 
-  // Once a pending move is fully prepared during current-move generation,
-  // keep it staged until the deterministic refill boundary. Avoid repeating a
-  // sqrt-heavy length calculation every service pass while waiting to commit.
   if (generating_move_ && pending_metric_sample_ >= METRIC_SAMPLE_COUNT) return true;
 
   float unit[3];
@@ -224,9 +221,6 @@ bool MotionController::fillPlannerFromPending() {
     return true;
   }
 
-  // v0.5.7 keeps the active lookahead solution immutable. Preparation is
-  // allowed during generation, but planner-tail mutation waits for a move
-  // boundary; the refill mode then fills back toward 16 before replanning.
   if (generating_move_ || profile_prepare_active_ || planner_.planning()) return true;
 
   const float feed_mm_s = float(p.feed_q8_8) * Q8_INV;
@@ -517,12 +511,7 @@ void MotionController::service() {
     return;
   }
 
-  // Match v0.5.7 rolling-window semantics exactly: the initial window is built
-  // to 16. During streaming, once the planned tail reaches 8 moves, enter a
-  // latched refill mode and do not replan until that window has been restored
-  // to 16 (or pending ingress is exhausted). Expensive validation/metrics stay
-  // cooperative, but the motion solution no longer depends on CPU cadence.
-  if (stream_active_ && !lookahead_refill_active_ && pending_count_ &&
+  if (stream_active_ && !profile_prepare_active_ && !lookahead_refill_active_ && pending_count_ &&
       planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES)
     lookahead_refill_active_ = true;
 
@@ -539,9 +528,6 @@ void MotionController::service() {
     if (planner_.full() || (all_ingress_prepared && streamClosed())) stream_active_ = true;
   }
 
-  // At a move boundary, a latched refill must complete before the next planner
-  // pass. While the current move is still generating we may precompute one
-  // pending move, but it remains staged and cannot alter the active solution.
   if (lookahead_refill_active_ && !generating_move_ && !profile_prepare_active_) {
     if (planner_.full() || !pending_count_) {
       lookahead_refill_active_ = false;
@@ -591,6 +577,17 @@ void MotionController::service() {
       return;
     }
     ++produced;
+
+    // Critical boundary rule: do not let the same service pass start profile
+    // preparation for move N+1 after move N popped the planner down to the
+    // v0.5.7 refill trigger. Latch refill immediately and yield. Otherwise the
+    // next pass sees an in-flight profile plus refill and can deadlock.
+    if (!generating_move_ && pending_count_ &&
+        planner_.count() <= LOOKAHEAD_REFILL_TRIGGER_MOVES) {
+      lookahead_refill_active_ = true;
+      break;
+    }
+
     if (queue_.count() >= cfg::MOTION_REFILL_TARGET) break;
     if (uint32_t(micros() - refill_started_us) >= cfg::MOTION_REFILL_BUDGET_US) break;
     if (queue_.count() >= cfg::MOTION_REFILL_LOW_WATER && Serial.available() > 0) break;
