@@ -83,6 +83,7 @@ private:
   bool generating_move_;
   bool planner_plan_valid_;
   bool profile_prepare_active_;
+  bool lookahead_refill_active_;
   bool flush_requested_;
   uint32_t last_enqueue_ms_;
   float carry_entry_speed_mm_s_;
