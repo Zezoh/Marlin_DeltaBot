@@ -6,9 +6,6 @@
 
 namespace deltacore {
 
-// Only persistent planning state lives in the ring. requested feed, transient
-// max-entry candidates and tower gain are consumed while preparing/planning a
-// move and do not need 16 replicated float slots in SRAM.
 struct PathMove {
   float start[3];
   float target[3];
@@ -21,13 +18,30 @@ struct PathMove {
   float max_tower_curvature;
 };
 
+enum PlannerStepResult : uint8_t {
+  PLANNER_STEP_ERROR = 0,
+  PLANNER_STEP_WORKING,
+  PLANNER_STEP_DONE
+};
+
 class PathPlanner {
 public:
   explicit PathPlanner(Kinematics &kinematics);
 
   void clear();
   bool enqueue(const float start[3], const float target[3], float feed_mm_s, float requested_accel_mm_s2);
+  bool enqueuePrepared(const float start[3], const float target[3], float feed_mm_s,
+                       float requested_accel_mm_s2, const MotionMetrics &metrics);
+
+  // Synchronous compatibility API used by host/unit tests.
   bool plan(float first_entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S);
+
+  // Realtime API: exactly one lookahead element is processed per service call.
+  bool beginPlan(float first_entry_speed_mm_s = cfg::MIN_PROFILE_SPEED_MM_S);
+  PlannerStepResult servicePlan();
+  bool planning() const { return plan_phase_ != PLAN_IDLE; }
+  void cancelPlan();
+
   bool popFront(PathMove *out = nullptr);
 
   uint8_t count() const { return count_; }
@@ -41,16 +55,32 @@ public:
   static float junctionSpeed(const PathMove &prev, const PathMove &next);
 
 private:
+  enum PlanPhase : uint8_t {
+    PLAN_IDLE = 0,
+    PLAN_JUNCTIONS,
+    PLAN_REVERSE,
+    PLAN_FORWARD,
+    PLAN_EXITS
+  };
+
   Kinematics &kinematics_;
   PathMove moves_[cfg::PATH_QUEUE_SIZE];
   uint8_t head_;
   uint8_t count_;
+
+  PlanPhase plan_phase_;
+  int8_t plan_index_;
+  float plan_first_entry_;
+  float plan_next_entry_;
 
   uint8_t physicalIndex(uint8_t logical) const {
     return uint8_t((uint16_t(head_) + logical) % cfg::PATH_QUEUE_SIZE);
   }
   bool prepareMove(PathMove &m, const float start[3], const float target[3],
                    float feed_mm_s, float requested_accel_mm_s2);
+  bool prepareMoveWithMetrics(PathMove &m, const float start[3], const float target[3],
+                              float feed_mm_s, float requested_accel_mm_s2,
+                              const MotionMetrics &metrics);
 };
 
 } // namespace deltacore

@@ -21,25 +21,18 @@ constexpr float DEFAULT_JERK_MM_S3 = 18000.0f;
 constexpr float MIN_PROFILE_SPEED_MM_S = 2.0f;
 constexpr float JUNCTION_DEVIATION_MM = 0.10f;
 
-// Mechanical reference from the original machine. DeltaCore deliberately uses
-// a lower actuator speed ceiling because the 16 MHz ATmega2560 must service
-// Timer1, UART and system timing concurrently without runtime deadline repair.
 constexpr float MECHANICAL_MAX_TOWER_SPEED_MM_S = 280.0f;
 constexpr float MAX_TOWER_SPEED_MM_S = 150.0f;
 constexpr float MAX_TOWER_ACCEL_MM_S2 = 6000.0f;
 constexpr float TOWER_CURVATURE_ACCEL_FRACTION = 0.35f;
 constexpr float TOWER_TANGENTIAL_ACCEL_FRACTION = 0.65f;
 
-// Adaptive Delta segmentation. The jerk-limited trajectory is sampled in time,
-// then shortened further when actuator-space curvature requires it.
 constexpr float TARGET_SEGMENT_HZ = 100.0f;
 constexpr float MIN_SEGMENT_TIME_S = 0.00125f;
 constexpr float MAX_SEGMENT_MM = 3.00f;
 constexpr float MAX_TOWER_CHORD_ERROR_MM = 0.0040f;
 constexpr uint8_t MAX_SEGMENT_SPLITS = 5;
 
-// Legacy runtime knobs retained for command compatibility. The v0.5 integer
-// DDA stepper does not use virtual phase events.
 constexpr float PHASE_MIN_EVENT_HZ = 800.0f;
 constexpr uint8_t MIN_MASTER_EVENTS_PER_LOW_SPEED_SEGMENT = 48;
 constexpr uint8_t MAX_SMOOTHING_LEVEL = 2;
@@ -47,12 +40,14 @@ constexpr uint8_t AUTO_SMOOTHING_MAX_LEVEL = 1;
 constexpr uint16_t SMOOTH_L1_INTERVAL_TICKS = 1800;
 constexpr uint16_t SMOOTH_L2_INTERVAL_TICKS = 5000;
 
-// Rolling lookahead keeps one PathMove window only. Additional accepted G1s
-// are stored compactly as XYZ+feed requests, avoiding another large PathMove
-// array while allowing a continuous stream across planning windows.
+// Rolling lookahead: 16 prepared moves plus 80 compact Q8.8 command requests.
+// Each pending entry is only 8 bytes (X/Y/Z/feed), so 80 entries consume about
+// the same SRAM as the old 46-entry float reservoir. Admission stops at 78 total
+// queued moves, which accepts the complete 75-move raw-burst regression while
+// retaining 18 slots of headroom between physical capacity and the watermark.
 constexpr uint8_t PATH_QUEUE_SIZE = 16;
-constexpr uint8_t STREAM_PENDING_SIZE = 64;
-constexpr uint8_t STREAM_ADMISSION_RESERVE = 2;
+constexpr uint8_t STREAM_PENDING_SIZE = 80;
+constexpr uint8_t STREAM_ADMISSION_RESERVE = 18;
 constexpr uint16_t LOOKAHEAD_HOLD_MS = 200;
 
 constexpr float HOME_FAST_MM_S = 35.0f;
@@ -62,16 +57,9 @@ constexpr float HOME_MAX_TRAVEL_MM = 300.0f;
 
 constexpr uint32_t TIMER_HZ = 2000000UL;
 constexpr uint16_t STEP_PULSE_TICKS = 6;
-// 160 ticks = 80 us = 12.5 kHz maximum shared DDA event rate. At 80 steps/mm
-// this supports 156.25 mm/s theoretical tower rate; the planner ceiling above
-// is 150 mm/s, leaving deterministic quantization/interrupt headroom.
 constexpr uint16_t MIN_EVENT_INTERVAL_TICKS = 160;
 constexpr uint16_t MAX_EVENT_INTERVAL_TICKS = 65000;
 constexpr uint16_t STARTUP_EVENT_TICKS = 200;
-
-// If an ISR takes long enough that a newly requested OCR1A deadline is already
-// too close to TCNT1, push the compare safely forward instead of risking a
-// missed compare and a long apparent stall. 24 ticks = 12 us at 2 MHz.
 constexpr uint16_t TIMER_ISR_GUARD_TICKS = 24;
 
 constexpr uint8_t MOTION_QUEUE_SIZE = 64;
@@ -81,8 +69,6 @@ constexpr uint8_t MOTION_REFILL_TARGET = 56;
 constexpr uint8_t MOTION_REFILL_MAX_BURST = 12;
 constexpr uint16_t MOTION_REFILL_BUDGET_US = 6000;
 
-// 128 bytes is enough for normal G-code while keeping the parser's mutable
-// line buffer small. Oversize lines are still rejected explicitly and safely.
 constexpr uint8_t SERIAL_LINE_SIZE = 128;
 constexpr uint32_t DEBUG_HEARTBEAT_MS = 5000UL;
 

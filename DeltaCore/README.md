@@ -1,85 +1,73 @@
-# DeltaCore v0.4.1 - Mega2560 Delta motion engine
+# DeltaCore v0.5.8 — Mega2560 Delta motion engine
 
-DeltaCore is a standalone motion firmware for the Mega2560 / MKS MINI v2.0 DeltaBot. The existing `Marlin/` tree remains untouched and serves as the machine-configuration and behavior reference.
+DeltaCore is a standalone Delta motion firmware for ATmega2560 / MKS MINI v2.0. The original `Marlin/` tree remains a machine-reference baseline; DeltaCore owns its motion stack.
 
-## Motion architecture
+## Architecture
 
 ```text
-G-code
-  -> burst look-ahead + junction planning
+G-code / serial
+  -> strict fail-closed command parser
+  -> barrier-aware command ordering
+  -> rolling look-ahead + junction planning
   -> Delta tower velocity/acceleration limits
-  -> analytic 7-phase jerk-limited trajectory
-  -> adaptive Delta segmentation
-  -> absolute continuous tower phase (Q15 steps)
-  -> phase-continuous A/B/C step crossing
-  -> Q8 Timer1 event-interval ramp
+  -> analytic 7-phase jerk-limited S-curve
+  -> curvature-bounded adaptive Delta segmentation
+  -> deterministic integer A/B/C DDA
+  -> exact segment-time Timer1 scheduling
   -> STEP / DIR
 ```
 
-All Delta IK, sqrt, trajectory generation and floating-point work remain outside the Timer1 ISR.
+All Delta IK, trajectory generation, square roots and floating-point work stay outside the Timer1 ISR.
 
-## v0.4 hardware validation
+## v0.5.8 serial hardening
 
-The physical DeltaBot completed a long F180 multi-move path with:
+v0.5.7 hardware motion validation matched the golden single-diagonal reference exactly, but a real host session exposed malformed serial lines while a multiline paste and automatic `M105` polling overlapped. Examples included `G-1 X-6 Y-2M105` and a truncated `M15`.
 
-```text
-blocks=11290
-vevents=198226
-phase_anchor=1
-phase_corr=0
-phase_fault=0
-starves=0
-guards=0
-health=CLEAN
-```
+v0.5.8 makes command parsing fail closed:
 
-The path elapsed time was 113.076 s, matching the actual commanded path length at 3 mm/s. This validates that fractional A/B/C actuator phase remained continuous across more than eleven thousand adaptive motion blocks without hidden boundary correction.
+- G0/G1 tokens are parsed sequentially instead of using `strchr` parameter lookup.
+- Fused commands such as `G1 X-6 Y-2M105` are rejected as malformed and never partially executed.
+- Duplicate XYZF parameters are rejected.
+- NaN/Inf numeric values are rejected.
+- Parameterized M-codes validate their complete tail instead of silently ignoring extra tokens.
+- No-argument commands reject trailing garbage.
+- Non-printable serial garbage is discarded through the next newline to re-establish framing.
+- Correct line-delimited `M105`, `M110`, `M113`, `M112` and `STOP` behavior remains barrier-aware.
+- `STATUS`/heartbeat expose a `malformed` counter.
 
-## Jerk-limited trajectory
-
-- Default path jerk limit: 18,000 mm/s^3.
-- Acceleration is ramped with bounded jerk instead of instantaneous acceleration changes.
-- Short moves automatically use triangular jerk transitions when full acceleration cannot be reached.
-- Reverse and forward look-ahead feasibility use the same jerk-limited transition-distance model.
-- Existing junction-deviation and tower-space limits remain active.
-
-## Phase-continuous A/B/C
-
-- Tower position is represented as absolute Q15 fractional steps.
-- Only the first block of a path establishes a phase anchor.
-- Every following segment starts from the exact previous continuous tower endpoint.
-- A physical STEP is emitted only when fractional actuator position crosses an integer-step boundary.
-- Continuous endpoint state is checked against the rounded Delta IK endpoint.
-- Direction mismatch or invalid phase jumps fail safe with `FAULT_INTERNAL`.
-- The Timer1 ISR remains integer-only.
-
-## v0.4.1 serial barrier ordering
-
-The v0.4.0 hardware log exposed one host-ordering issue with multiline pastes: a command following `G28` could be parsed before homing finished, and a command following `M400` could be executed before the motion barrier completed.
-
-v0.4.1 adds a small deferred command queue:
-
-- RX continues to be drained during G28/M400 barriers.
-- `M105`, `M110`, `M112/STOP`, and `M113` remain immediate.
-- Normal commands received during a barrier are queued and replayed in order after the barrier ACK.
-- `M973` and debug heartbeat expose `deferq` and overflow state.
-- `M10` is accepted as a harmless unsupported auxiliary-output no-op for host compatibility.
+Firmware cannot reconstruct bytes that a host interleaves before newline framing; the safe behavior is to reject the contaminated line and preserve machine state.
 
 ## Machine baseline
 
 - MKS MINI v2.0 / ATmega2560
+- 250000 baud
 - 80 steps/mm
 - diagonal rod: 210 mm
 - Delta radius: 90 mm
 - Delta height: 225 mm
 - printable radius: 85 mm
-- tower max speed: 280 mm/s
-- tower max acceleration: 6000 mm/s^2
-- default Cartesian acceleration: 1600 mm/s^2
-- default jerk limit: 18000 mm/s^3
+- tower max speed: 150 mm/s
+- tower max acceleration: 6000 mm/s²
+- default Cartesian acceleration: 1600 mm/s²
+- default jerk limit: 18000 mm/s³
 - max Cartesian feed: 180 mm/s
 - Timer1: 2 MHz
-- STEP pulse: 3 us
+- minimum shared DDA event interval: 160 ticks / 80 µs
+
+## Validation
+
+CI runs:
+
+- host math/motion tests
+- strict parser corruption regressions
+- exact-time hardware simulation
+- rolling stream stress simulation
+- realtime UART + M105 + adaptive-refill simulation
+- tiny-tail / underrun recovery regression
+- Mega2560 compile/link
+- static SRAM budget gate (`<= 4096` bytes)
+- cycle-accurate simavr ATmega2560 + RAMPS 1.4 + 3×A4988 HIL
+- AVR short-segment hot-path profiler
 
 ## Useful commands
 
@@ -92,10 +80,13 @@ M114          Cartesian + tower position
 M204          acceleration
 M970          phase-event smoothing mode
 M971          motion performance snapshot
-M973          runtime / serial / queue status
+M972          clear performance counters while idle
+M973/STATUS   runtime / serial / queue status
 M111 S0..2    debug level
+M113          host keepalive interval
 M115          firmware identity
 M503          motion settings
+M18           motors off + invalidate position
 M112          emergency stop
 M999          clear fault; G28 required afterward
 ```
@@ -106,14 +97,12 @@ M999          clear fault; G28 required afterward
 pio run --project-dir DeltaCore -e megaatmega2560
 ```
 
-Final v0.4.1 CI build:
+Output:
 
-- host tests: PASS
-- Mega2560 compile/link: success
-- RAM: 4,893 / 8,192 bytes (59.7%)
-- Flash: 39,870 / 253,952 bytes (15.7%)
-- artifact: `DeltaCore-Mega2560-v0.4.1`
+```text
+DeltaCore/.pio/build/megaatmega2560/firmware.hex
+```
 
-## Scope
+## Release discipline
 
-DeltaCore remains a controlled motion-engine development firmware. v0.3.5 remains the fallback hardware baseline. The current priority is validating v0.4.x over broader physical paths before adding printer features or declaring it production-stable.
+`DeltaCore/VERSION`, runtime `M115` identity, README and CI artifact naming must remain coherent. Motion acceptance still requires `starves=0`, `guards=0`, `phase_fault=0`, `health=CLEAN` on normal hardware tests.

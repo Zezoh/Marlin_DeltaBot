@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - codex/deltacore-motion-baseline-v0.1
+      - codex/deltacore-v0.5.8-serial-hardening
     paths:
       - 'DeltaCore/**'
       - '.github/workflows/deltacore-build.yml'
@@ -21,6 +22,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Version coherence sanity
+        run: |
+          test "$(tr -d '\r\n' < DeltaCore/VERSION)" = "0.5.8"
+          grep -q 'VERSION:0.5.8' DeltaCore/src/main.cpp
+          grep -q 'DeltaCore 0.5.8' DeltaCore/src/main.cpp
+
+      - name: Real HIL runner syntax sanity
+        run: |
+          python3 -m py_compile DeltaCore/tools/real_hil.py
+          python3 -m py_compile DeltaCore/tools/run_ramps_hil_diag.py
+
       - name: Host motion tests
         run: |
           g++ -std=c++11 -Wall -Wextra -pedantic -IDeltaCore/src \
@@ -32,6 +44,13 @@ jobs:
             DeltaCore/src/PhaseStep3Axis.cpp \
             -o /tmp/deltacore_motion_test
           /tmp/deltacore_motion_test
+
+      - name: Strict command parser regressions
+        run: |
+          g++ -std=c++11 -Wall -Wextra -pedantic -IDeltaCore/src \
+            DeltaCore/test/test_command_parser.cpp \
+            -o /tmp/deltacore_parser_test
+          /tmp/deltacore_parser_test
 
       - name: Exact-time hardware regression simulation
         run: python3 DeltaCore/test/sim_v050.py
@@ -56,14 +75,13 @@ jobs:
       - name: Build Mega2560 firmware
         run: pio run --project-dir DeltaCore -e megaatmega2560
 
-      - name: SRAM budget gate
+      - name: Build RAMPS full-IO diagnostic firmware
+        run: pio run --project-dir DeltaCore/hil/ramps14_diag -e megaatmega2560
+
+      - name: Static SRAM budget gate
         run: |
           SIZE_TOOL="$HOME/.platformio/packages/toolchain-atmelavr/bin/avr-size"
           ELF="DeltaCore/.pio/build/megaatmega2560/firmware.elf"
-          # Generic avr-size's "data" column also counts the .eeprom section on
-          # AVR. Static SRAM is only allocatable RAM sections: .data + .bss +
-          # .noinit. Keep EEPROM explicitly separate so the gate matches the
-          # linker/PlatformIO RAM report instead of over-counting 192 EEPROM B.
           SRAM=$($SIZE_TOOL -A "$ELF" | awk '$1==".data" || $1==".bss" || $1==".noinit" {sum += $2} END {print sum+0}')
           EEPROM=$($SIZE_TOOL -A "$ELF" | awk '$1==".eeprom" {sum += $2} END {print sum+0}')
           echo "Static SRAM=${SRAM}/8192 bytes; EEPROM image=${EEPROM} bytes"
@@ -109,8 +127,9 @@ jobs:
       - name: Upload firmware HEX
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaCore-Mega2560-v0.5.7-RAM-COMPACT-HIL
+          name: DeltaCore-Mega2560-v0.5.8-HIL
           path: |
             DeltaCore/.pio/build/megaatmega2560/firmware.hex
             DeltaCore/.pio/build/megaatmega2560/firmware.nm.txt
+            DeltaCore/hil/ramps14_diag/.pio/build/megaatmega2560/firmware.hex
           if-no-files-found: error
