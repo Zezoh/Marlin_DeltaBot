@@ -41,7 +41,9 @@ constexpr uint8_t FAN_ONOFF_PIN = ramps14::FAN_ONOFF.pin;
 constexpr uint8_t NOZZLE_THERMISTOR_ADC_CHANNEL = 13;
 constexpr uint8_t NOZZLE_THERMISTOR_DIGITAL_PIN = ramps14::TEMP_0.pin;
 
-constexpr uint32_t SERIAL_BAUD = 250000UL;
+// Evaluation-only serial profile. Lower baud increases the time budget before
+// an RX byte can overrun while high-priority step interrupts are executing.
+constexpr uint32_t SERIAL_BAUD = 115200UL;
 
 } // namespace hwcfg
 } // namespace deltacore
