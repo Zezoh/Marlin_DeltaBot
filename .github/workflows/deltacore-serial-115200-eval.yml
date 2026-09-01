@@ -1,0 +1,32 @@
+name: DeltaCore 115200 Raw Burst Eval
+
+on:
+  push:
+    branches:
+      - codex/deltacore-serial-115200-eval
+  workflow_dispatch:
+
+jobs:
+  raw-burst-hil:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+      - name: Build firmware at 115200
+        run: pio run --project-dir DeltaCore -e megaatmega2560
+      - name: Install simavr
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y simavr libsimavr-dev pkg-config
+      - name: Build raw-burst HIL at matching 115200 wire rate
+        run: |
+          sed -i 's/#define UART_BAUD 250000UL/#define UART_BAUD 115200UL/' DeltaCore/test/simavr_ramps14_hil.c
+          CFLAGS="$(pkg-config --cflags simavr 2>/dev/null || echo -I/usr/include/simavr)"
+          LIBS="$(pkg-config --libs simavr 2>/dev/null || echo '-lsimavr -lelf -lpthread')"
+          cc -std=c11 -O2 -Wall -Wextra $CFLAGS DeltaCore/test/simavr_ramps14_hil_v3.c -o /tmp/hil_v3 $LIBS -lm
+      - name: Run unpaced raw-burst HIL
+        run: timeout 240s /tmp/hil_v3 DeltaCore/.pio/build/megaatmega2560/firmware.elf
